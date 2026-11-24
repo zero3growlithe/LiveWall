@@ -142,24 +142,55 @@ internal sealed class CompositionPresenter : IDisposable
         _compositionDevice = DComp.DCompositionCreateDevice<IDCompositionDevice>(_dxgiDevice);
         _compositionDevice.CreateTargetForHwnd(windowHandle, new RawBool(false), out IDCompositionTarget compositionTarget).CheckError();
         _compositionTarget = compositionTarget;
-        // Visual tree: root (identity) -> solid colour swatch (below) + the wallpaper content (above).
-        // The swatch exists because a wallpaper that does not cover the whole window would otherwise leave the
-        // old Windows wallpaper visible around it — which reads as "several different pictures at once".
-        _compositionDevice.CreateVisual(out IDCompositionVisual rootVisual).CheckError();
-        _rootVisual = rootVisual;
-        _compositionTarget.SetRoot(rootVisual);
-
-        _compositionDevice.CreateVisual(out IDCompositionVisual backgroundVisual).CheckError();
-        _backgroundVisual = backgroundVisual;
-        _backgroundVisual.SetBitmapInterpolationMode(BitmapInterpolationMode.Linear);
-        _rootVisual.AddVisual(_backgroundVisual, new RawBool(true), null!);
-
         _compositionDevice.CreateVisual(out IDCompositionVisual visual).CheckError();
         _visual = visual;
         _visual.SetBitmapInterpolationMode(BitmapInterpolationMode.Linear);
-        _rootVisual.AddVisual(_visual, new RawBool(true), _backgroundVisual);
 
-        CreateBackgroundSwatch();
+        // Visual tree: root (identity) -> solid colour swatch (below) + the wallpaper content (above). The
+        // swatch exists because a wallpaper that does not cover the whole window would otherwise leave the old
+        // Windows wallpaper visible around it, which reads as "several different pictures at once".
+        // Everything here is optional: if any of it fails the plain single-visual tree is used instead, because
+        // losing the background colour must never cost the wallpaper. It did once, in v2.3.0.
+        bool decorated = false;
+        try
+        {
+            _compositionDevice.CreateVisual(out IDCompositionVisual rootVisual).CheckError();
+            _rootVisual = rootVisual;
+            _compositionDevice.CreateVisual(out IDCompositionVisual backgroundVisual).CheckError();
+            _backgroundVisual = backgroundVisual;
+            _backgroundVisual.SetBitmapInterpolationMode(BitmapInterpolationMode.Linear);
+            _rootVisual.AddVisual(_backgroundVisual, new RawBool(true), null!);
+            _rootVisual.AddVisual(_visual, new RawBool(true), _backgroundVisual);
+            CreateBackgroundSwatch();
+            _compositionTarget.SetRoot(_rootVisual);
+            decorated = true;
+        }
+        catch (Exception backgroundFailure)
+        {
+            AppLog.Write("the background colour swatch is unavailable: " + backgroundFailure.Message);
+            ReleaseBackgroundSwatch();
+        }
+
+        if (!decorated)
+        {
+            if (_rootVisual != null)
+            {
+                try
+                {
+                    _rootVisual.RemoveVisual(_visual);
+                }
+                catch (Exception detachFailure)
+                {
+                    AppLog.Write("detaching the wallpaper visual from the unused root failed: " + detachFailure.Message);
+                }
+
+                _rootVisual.Dispose();
+                _rootVisual = null;
+            }
+
+            _compositionTarget.SetRoot(_visual);
+        }
+
         _compositionDevice.Commit();
     }
 
@@ -207,6 +238,30 @@ internal sealed class CompositionPresenter : IDisposable
         }
     }
 
+    /// <summary>Drops the swatch so the presenter keeps working without a painted background.</summary>
+    private void ReleaseBackgroundSwatch()
+    {
+        if (_backgroundVisual != null)
+        {
+            try
+            {
+                _backgroundVisual.SetContent(null);
+            }
+            catch (Exception exception)
+            {
+                AppLog.Write("clearing the background swatch failed: " + exception.Message);
+            }
+        }
+
+        if (_backgroundSwapChain != null)
+        {
+            _backgroundSwapChain.Dispose();
+            _backgroundSwapChain = null;
+        }
+
+        _backgroundColorSet = false;
+    }
+
     private void CreateBackgroundSwatch()
     {
         if (_device == null || _dxgiDevice == null || _backgroundVisual == null)
@@ -220,7 +275,7 @@ internal sealed class CompositionPresenter : IDisposable
             Format.B8G8R8A8_UNorm,
             false,
             Usage.RenderTargetOutput,
-            1,
+            SwapChainBufferCount,
             Scaling.Stretch,
             SwapEffect.FlipSequential,
             AlphaMode.Ignore,
