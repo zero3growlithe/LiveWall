@@ -53,7 +53,8 @@ public static class StartupService
                         return;
                     }
 
-                    key.SetValue(ValueName, "\"" + executablePath + "\"");
+                    // The --tray switch tells a launched-by-Windows instance to stay in the notification area.
+                    key.SetValue(ValueName, "\"" + executablePath + "\" --tray");
                 }
                 else
                 {

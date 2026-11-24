@@ -59,7 +59,8 @@ public partial class App : Application
         _mainWindow = new MainWindow(_engine, _settings);
         MainWindow = _mainWindow;
 
-        bool showWindow = firstRun || !_settings.StartMinimized;
+        bool startedFromAutostart = Array.IndexOf(e.Args, "--tray") >= 0;
+        bool showWindow = firstRun || !startedFromAutostart || !_settings.StartMinimized;
         if (showWindow)
         {
             _mainWindow.Show();

@@ -21,7 +21,8 @@ lets every monitor have its own wallpaper, and automatically pauses playback whi
     (e.g. `Paused — maximized window: chrome.exe (video loop.mp4)`).
 - **Scaling**: fill (crop), fit (letterbox), stretch, or original size centred.
 - **Tray icon** with `Settings…`, `Pause all` / `Resume all` and `Exit`; closing the window hides to tray.
-- **Start with Windows** (HKCU `Run`), optional start hidden.
+- **Start with Windows** (HKCU `Run`, registered with the `--tray` switch so a manual launch always
+  opens the settings window while an autostart launch goes straight to the notification area).
 - Single instance, per-monitor DPI aware, settings and log in `%LocalAppData%\LiveWall\`.
 
 ## Controls

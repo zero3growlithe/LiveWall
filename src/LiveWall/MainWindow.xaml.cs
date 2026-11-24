@@ -67,6 +67,11 @@ public partial class MainWindow : Window
             _suppressEditorEvents = false;
         }
 
+        if (_engine.Monitors.Count == 0)
+        {
+            _engine.RefreshMonitors();
+        }
+
         RefreshMonitorTargets();
         LoadEditor();
         UpdateStatuses();

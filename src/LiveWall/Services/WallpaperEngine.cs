@@ -104,7 +104,8 @@ public sealed class WallpaperEngine : IDisposable
         _settings = settings;
         if (!_isRunning)
         {
-            RaiseStatusChanged();
+            // "Apply" on a stopped engine means "start drawing this wallpaper".
+            Start(settings);
             return;
         }
 
