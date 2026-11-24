@@ -26,6 +26,13 @@ internal sealed class CompositionPresenter : IDisposable
 {
     private const int SwapChainBufferCount = 2;
     private const int BytesPerPixel = 4;
+    private const int BackgroundSwatchSize = 8;
+
+    /// <summary>
+    /// How far the solid-colour swatch is stretched. It has to cover the window whatever mapping the compositor
+    /// uses between DIPs and pixels, so it is deliberately absurd: 8 px * 2000 = 16000 DIPs per side.
+    /// </summary>
+    private const float BackgroundSwatchScale = 2000f;
 
     private static readonly FeatureLevel[] RequestedFeatureLevels = new FeatureLevel[]
     {
@@ -40,9 +47,16 @@ internal sealed class CompositionPresenter : IDisposable
     private IDXGIDevice? _dxgiDevice;
     private IDCompositionDevice? _compositionDevice;
     private IDCompositionTarget? _compositionTarget;
+    private IDCompositionVisual? _rootVisual;
     private IDCompositionVisual? _visual;
+    private IDCompositionVisual? _backgroundVisual;
     private IDXGISwapChain1? _swapChain;
+    private IDXGISwapChain1? _backgroundSwapChain;
     private ID3D11Texture2D? _uploadTexture;
+    private byte _backgroundColorRed;
+    private byte _backgroundColorGreen;
+    private byte _backgroundColorBlue;
+    private bool _backgroundColorSet;
 
     private int _windowWidth;
     private int _windowHeight;
@@ -64,6 +78,12 @@ internal sealed class CompositionPresenter : IDisposable
     public bool IsInitialized
     {
         get { return _compositionDevice != null && _visual != null; }
+    }
+
+    /// <summary>True when the colour behind the wallpaper is painted, so unpainted areas are not transparent.</summary>
+    public bool HasBackgroundSwatch
+    {
+        get { return _backgroundSwapChain != null; }
     }
 
     public int BufferWidth
@@ -122,11 +142,95 @@ internal sealed class CompositionPresenter : IDisposable
         _compositionDevice = DComp.DCompositionCreateDevice<IDCompositionDevice>(_dxgiDevice);
         _compositionDevice.CreateTargetForHwnd(windowHandle, new RawBool(false), out IDCompositionTarget compositionTarget).CheckError();
         _compositionTarget = compositionTarget;
+        // Visual tree: root (identity) -> solid colour swatch (below) + the wallpaper content (above).
+        // The swatch exists because a wallpaper that does not cover the whole window would otherwise leave the
+        // old Windows wallpaper visible around it — which reads as "several different pictures at once".
+        _compositionDevice.CreateVisual(out IDCompositionVisual rootVisual).CheckError();
+        _rootVisual = rootVisual;
+        _compositionTarget.SetRoot(rootVisual);
+
+        _compositionDevice.CreateVisual(out IDCompositionVisual backgroundVisual).CheckError();
+        _backgroundVisual = backgroundVisual;
+        _backgroundVisual.SetBitmapInterpolationMode(BitmapInterpolationMode.Linear);
+        _rootVisual.AddVisual(_backgroundVisual, new RawBool(true), null!);
+
         _compositionDevice.CreateVisual(out IDCompositionVisual visual).CheckError();
         _visual = visual;
         _visual.SetBitmapInterpolationMode(BitmapInterpolationMode.Linear);
-        _compositionTarget.SetRoot(_visual);
+        _rootVisual.AddVisual(_visual, new RawBool(true), _backgroundVisual);
+
+        CreateBackgroundSwatch();
         _compositionDevice.Commit();
+    }
+
+    /// <summary>
+    /// Paints the colour that shows through wherever the wallpaper does not cover the window. Every stretch mode
+    /// except Fill and Stretch leaves area uncovered, and that area used to show whatever wallpaper Windows had
+    /// before, which is impossible to tell apart from a broken renderer.
+    /// </summary>
+    public void SetBackgroundColor(byte red, byte green, byte blue)
+    {
+        if (_backgroundSwapChain == null || _context == null)
+        {
+            return;
+        }
+
+        if (_backgroundColorSet && _backgroundColorRed == red && _backgroundColorGreen == green && _backgroundColorBlue == blue)
+        {
+            return;
+        }
+
+        try
+        {
+            int rowBytes = BackgroundSwatchSize * BytesPerPixel;
+            byte[] pixels = new byte[BackgroundSwatchSize * rowBytes];
+            for (int index = 0; index < pixels.Length; index += 4)
+            {
+                pixels[index] = blue;
+                pixels[index + 1] = green;
+                pixels[index + 2] = red;
+                pixels[index + 3] = 255;
+            }
+
+            using ID3D11Texture2D buffer = _backgroundSwapChain.GetBuffer<ID3D11Texture2D>(0);
+            _context.UpdateSubresource<byte>(pixels, buffer, 0, (uint)rowBytes, 0, null);
+            _backgroundSwapChain.Present(1, PresentFlags.None);
+
+            _backgroundColorRed = red;
+            _backgroundColorGreen = green;
+            _backgroundColorBlue = blue;
+            _backgroundColorSet = true;
+        }
+        catch (Exception exception)
+        {
+            AppLog.Write("painting the wallpaper background colour failed: " + exception.Message);
+        }
+    }
+
+    private void CreateBackgroundSwatch()
+    {
+        if (_device == null || _dxgiDevice == null || _backgroundVisual == null)
+        {
+            return;
+        }
+
+        SwapChainDescription1 description = new SwapChainDescription1(
+            (uint)BackgroundSwatchSize,
+            (uint)BackgroundSwatchSize,
+            Format.B8G8R8A8_UNorm,
+            false,
+            Usage.RenderTargetOutput,
+            1,
+            Scaling.Stretch,
+            SwapEffect.FlipSequential,
+            AlphaMode.Ignore,
+            SwapChainFlags.None);
+
+        using IDXGIAdapter adapter = _dxgiDevice.GetAdapter();
+        using IDXGIFactory2 factory = adapter.GetParent<IDXGIFactory2>();
+        _backgroundSwapChain = factory.CreateSwapChainForComposition(_device, description, null!);
+        _backgroundVisual.SetContent(_backgroundSwapChain);
+        _backgroundVisual.SetTransform(new Matrix3x2(BackgroundSwatchScale, 0f, 0f, BackgroundSwatchScale, 0f, 0f));
     }
 
     /// <summary>Resizes the window side of the equation (monitor resolution changed).</summary>
@@ -312,11 +416,20 @@ internal sealed class CompositionPresenter : IDisposable
     {
         ReleaseSwapChain();
 
-        if (_compositionDevice != null && _visual != null)
+        if (_compositionDevice != null && (_visual != null || _backgroundVisual != null))
         {
             try
             {
-                _visual.SetContent(null);
+                if (_visual != null)
+                {
+                    _visual.SetContent(null);
+                }
+
+                if (_backgroundVisual != null)
+                {
+                    _backgroundVisual.SetContent(null);
+                }
+
                 _compositionDevice.Commit();
             }
             catch (Exception exception)
@@ -329,6 +442,24 @@ internal sealed class CompositionPresenter : IDisposable
         {
             _visual.Dispose();
             _visual = null;
+        }
+
+        if (_backgroundSwapChain != null)
+        {
+            _backgroundSwapChain.Dispose();
+            _backgroundSwapChain = null;
+        }
+
+        if (_backgroundVisual != null)
+        {
+            _backgroundVisual.Dispose();
+            _backgroundVisual = null;
+        }
+
+        if (_rootVisual != null)
+        {
+            _rootVisual.Dispose();
+            _rootVisual = null;
         }
 
         if (_compositionTarget != null)

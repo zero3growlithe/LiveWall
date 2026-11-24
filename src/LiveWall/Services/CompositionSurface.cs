@@ -100,6 +100,8 @@ public sealed class CompositionSurface : IWallpaperSurface
     private bool _videoGeometryLogged;
     private bool _firstVideoFrameDumped;
     private bool _contentBoxValid;
+    private int _pendingBackgroundColour = -1;
+    private int _appliedBackgroundColour = -1;
     private ContentBox _contentBox;
     private long _framesPresented;
     private volatile bool _renderThreadAlive;
@@ -299,6 +301,9 @@ public sealed class CompositionSurface : IWallpaperSurface
             _stretch = stretch;
         }
 
+        Color background = ColorParser.ParseHexColor(_source.BackgroundColor, Colors.Black);
+        _pendingBackgroundColour = (background.R << 16) | (background.G << 8) | background.B;
+
         switch (_source.Kind)
         {
             case WallpaperKind.Video:
@@ -355,6 +360,25 @@ public sealed class CompositionSurface : IWallpaperSurface
     }
 
     // ── Source handling (UI thread) ───────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Pushes the configured background colour to the presenter, which paints it behind the wallpaper. Whatever
+    /// a stretch mode leaves uncovered then shows that colour instead of the old Windows wallpaper.
+    /// </summary>
+    private void ApplyPendingBackgroundColour(CompositionPresenter presenter)
+    {
+        int colour = _pendingBackgroundColour;
+        if (colour < 0 || colour == _appliedBackgroundColour)
+        {
+            return;
+        }
+
+        _appliedBackgroundColour = colour;
+        presenter.SetBackgroundColor(
+            (byte)((colour >> 16) & 0xFF),
+            (byte)((colour >> 8) & 0xFF),
+            (byte)(colour & 0xFF));
+    }
 
     private void PushVideoSource()
     {
@@ -614,6 +638,8 @@ public sealed class CompositionSurface : IWallpaperSurface
                 {
                     break;
                 }
+
+                ApplyPendingBackgroundColour(presenter);
 
                 if (videoCommand != null)
                 {
