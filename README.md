@@ -20,7 +20,12 @@ lets every monitor have its own wallpaper, and automatically pauses playback whi
   - a **fullscreen application that has the focus** pauses **every** monitor.
   - Both rules are toggleable, and every paused monitor explains *why* in its status line
     (e.g. `Paused — maximized window: chrome.exe (video loop.mp4)`).
-- **Scaling**: fill (crop), fit (letterbox), stretch, or original size centred.
+- **Scaling**: fill (crop), fit (letterbox), stretch, or original size centred. A black band that arrives
+  *inside* a decoded video frame is cropped off before drawing: the band is part of the frame data, so no
+  scaling mode can hide it.
+- **Profiles**: save the current setup — every monitor at once — under a name and load it later
+  (`%LocalAppData%\LiveWall\profiles\<name>.json`). The renderer choice and the window placement are not part
+  of a profile: they describe the app, not the decor.
 - **Tray icon** with `Settings…`, `Pause all` / `Resume all` and `Exit`; closing the window hides to tray.
 - **Start with Windows** (HKCU `Run`, registered with the `--tray` switch so a manual launch always
   opens the settings window while an autostart launch goes straight to the notification area).

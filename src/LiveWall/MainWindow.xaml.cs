@@ -81,6 +81,7 @@ public partial class MainWindow : Window
 
         SyncMonitorTargets();
         LoadEditor();
+        RefreshProfileList(null);
         UpdateStatuses();
     }
 
@@ -334,6 +335,136 @@ public partial class MainWindow : Window
     }
 
     // ── Status ──
+
+    // ── Profiles (a whole setup for every monitor) ──
+
+    private void RefreshProfileList(string? selectName)
+    {
+        _suppressEditorEvents = true;
+        try
+        {
+            ProfileComboBox.Items.Clear();
+            foreach (string name in ProfileService.ListProfiles())
+            {
+                ProfileComboBox.Items.Add(name);
+            }
+
+            bool selected = false;
+            for (int index = 0; index < ProfileComboBox.Items.Count; index++)
+            {
+                if (string.Equals(ProfileComboBox.Items[index] as string, selectName, StringComparison.Ordinal))
+                {
+                    ProfileComboBox.SelectedIndex = index;
+                    selected = true;
+                    break;
+                }
+            }
+
+            if (!selected && ProfileComboBox.Items.Count > 0)
+            {
+                ProfileComboBox.SelectedIndex = 0;
+            }
+            else if (ProfileComboBox.Items.Count == 0)
+            {
+                ProfileComboBox.SelectedIndex = -1;
+            }
+            else if (ProfileComboBox.Items.Count > 0)
+            {
+                ProfileComboBox.SelectedIndex = 0;
+            }
+        }
+        finally
+        {
+            _suppressEditorEvents = false;
+        }
+    }
+
+    private void SaveProfile_Click(object sender, RoutedEventArgs e)
+    {
+        SaveEditor();
+
+        string name = ProfileNameTextBox.Text == null ? string.Empty : ProfileNameTextBox.Text.Trim();
+        if (name.Length == 0)
+        {
+            name = ProfileComboBox.SelectedItem as string ?? string.Empty;
+        }
+
+        if (name.Length == 0)
+        {
+            MessageBox.Show(
+                this,
+                "Type a name for the profile in the box above the buttons, then press Save.",
+                "LiveWall",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        if (!ProfileService.Save(name, _settings))
+        {
+            MessageBox.Show(this, "The profile could not be saved. See crash.log for the reason.", "LiveWall", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        ProfileNameTextBox.Text = name;
+        RefreshProfileList(name);
+        SetTextIfChanged(StatusTextBlock, "Profile saved: " + name);
+    }
+
+    private void LoadProfile_Click(object sender, RoutedEventArgs e)
+    {
+        string? name = ProfileComboBox.SelectedItem as string;
+        if (string.IsNullOrEmpty(name))
+        {
+            return;
+        }
+
+        WallpaperProfile? profile = ProfileService.Load(name);
+        if (profile == null)
+        {
+            MessageBox.Show(this, "That profile could not be read. See crash.log for the reason.", "LiveWall", MessageBoxButton.OK, MessageBoxImage.Warning);
+            RefreshProfileList(null);
+            return;
+        }
+
+        // The editor holds the newest values for the selected monitor, so it is written back before the
+        // profile replaces every definition.
+        SaveEditor();
+        profile.CopyTo(_settings);
+        SettingsService.Save(_settings);
+
+        _suppressEditorEvents = true;
+        try
+        {
+            SameForAllCheckBox.IsChecked = _settings.SameForAllMonitors;
+        }
+        finally
+        {
+            _suppressEditorEvents = false;
+        }
+
+        LoadEditor();
+        _engine.ApplySettings(_settings);
+        SetTextIfChanged(StatusTextBlock, "Profile loaded: " + name);
+    }
+
+    private void DeleteProfile_Click(object sender, RoutedEventArgs e)
+    {
+        string? name = ProfileComboBox.SelectedItem as string;
+        if (string.IsNullOrEmpty(name))
+        {
+            return;
+        }
+
+        if (!ProfileService.Delete(name))
+        {
+            RefreshProfileList(null);
+            return;
+        }
+
+        RefreshProfileList(null);
+        SetTextIfChanged(StatusTextBlock, "Profile deleted: " + name);
+    }
 
     private void UpdateStatuses()
     {

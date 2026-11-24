@@ -98,6 +98,8 @@ public sealed class CompositionSurface : IWallpaperSurface
     private double _devicePixelsPerDip = 1.0;
     private bool _firstFrameLogged;
     private bool _videoGeometryLogged;
+    private bool _firstVideoFrameDumped;
+    private int _lastReportedContentHeight = -1;
     private long _framesPresented;
     private volatile bool _renderThreadAlive;
 
@@ -627,6 +629,8 @@ public sealed class CompositionSurface : IWallpaperSurface
                             video = candidate;
                             _isVideoOpen = true;
                             _videoGeometryLogged = false;
+                            _firstVideoFrameDumped = false;
+                            _lastReportedContentHeight = -1;
                             firstSampleTime = -1;
                             playbackStartTimestamp = 0;
                             presenter.InvalidateTransform();
@@ -705,9 +709,19 @@ public sealed class CompositionSurface : IWallpaperSurface
 
                     try
                     {
-                        presenter.ShowPixels(pixels, video.Width, video.Height, stretch);
-                        LogFirstFrame(presenter, video.Width, video.Height, stretch, _description);
+                        int contentTop;
+                        int contentHeight;
+                        byte[] presented = CropLetterboxRows(
+                            pixels,
+                            video.Width,
+                            video.Height,
+                            out contentTop,
+                            out contentHeight);
+                        ReportCroppedVideo(video, contentTop, contentHeight);
+                        presenter.ShowPixels(presented, video.Width, contentHeight, stretch);
+                        LogFirstFrame(presenter, video.Width, contentHeight, stretch, _description);
                         LogVideoGeometry(video);
+                        DumpFirstVideoFrame(pixels, video.Width, video.Height);
                         Interlocked.Increment(ref _framesPresented);
                     }
                     catch (Exception exception)
@@ -824,6 +838,137 @@ public sealed class CompositionSurface : IWallpaperSurface
             video.LastBufferLength,
             video.ExpectedBufferLength,
             video.LastRowsCopied));
+    }
+
+    /// <summary>
+    /// Drops the all-black rows above and below the picture. A decoder can hand back frames that are taller
+    /// than the image inside them, and the leftover rows are part of the frame data, so no stretch mode can
+    /// hide them — the band has to be cropped before the frame reaches the visual. Returns the frame itself
+    /// when there is nothing to crop, so the common case costs nothing.
+    /// </summary>
+    private static byte[] CropLetterboxRows(byte[] pixels, int width, int height, out int contentTop, out int contentHeight)
+    {
+        contentTop = 0;
+        contentHeight = height;
+
+        int rowBytes = width * 4;
+        if (rowBytes <= 0 || height <= 32 || pixels.Length < rowBytes * height)
+        {
+            return pixels;
+        }
+
+        int maximumTrim = Math.Max(1, height / 4);
+        int top = 0;
+        while (top < maximumTrim && IsBlackRow(pixels, rowBytes, top))
+        {
+            top++;
+        }
+
+        int bottom = height;
+        while (((height - bottom) < maximumTrim) && ((bottom - top) > 32) && IsBlackRow(pixels, rowBytes, bottom - 1))
+        {
+            bottom--;
+        }
+
+        int rows = bottom - top;
+        if ((top == 0 && rows == height) || rows < 32)
+        {
+            return pixels;
+        }
+
+        byte[] cropped = new byte[rows * rowBytes];
+        Buffer.BlockCopy(pixels, top * rowBytes, cropped, 0, cropped.Length);
+        contentTop = top;
+        contentHeight = rows;
+        return cropped;
+    }
+
+    /// <summary>True when the sampled pixels of a row are all black, which is what a letterbox band looks like.</summary>
+    private static bool IsBlackRow(byte[] pixels, int rowBytes, int rowIndex)
+    {
+        int offset = rowIndex * rowBytes;
+        int last = offset + rowBytes - 4;
+        for (int index = offset; index <= last; index += 16)
+        {
+            if (pixels[index] > 8 || pixels[index + 1] > 8 || pixels[index + 2] > 8)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private void ReportCroppedVideo(MediaFoundationVideo video, int contentTop, int contentHeight)
+    {
+        if (_lastReportedContentHeight == contentHeight)
+        {
+            return;
+        }
+
+        _lastReportedContentHeight = contentHeight;
+        if (contentHeight == video.Height)
+        {
+            AppLog.Write(string.Format(
+                CultureInfo.InvariantCulture,
+                "video fills its frame for {0}: {1} rows, nothing to crop",
+                _deviceName,
+                contentHeight));
+            return;
+        }
+
+        AppLog.Write(string.Format(
+            CultureInfo.InvariantCulture,
+            "video letterbox cropped for {0}: kept rows {1}..{2} of {3}",
+            _deviceName,
+            contentTop,
+            contentTop + contentHeight - 1,
+            video.Height));
+    }
+
+    /// <summary>
+    /// Writes the first decoded frame of a video to %LocalAppData%\LiveWall\first-video-frame.png. When a
+    /// video looks wrong on screen this file shows what the decoder actually produced, which separates a
+    /// decoding problem from a presentation problem instead of guessing at it.
+    /// </summary>
+    private void DumpFirstVideoFrame(byte[] pixels, int width, int height)
+    {
+        if (_firstVideoFrameDumped)
+        {
+            return;
+        }
+
+        _firstVideoFrameDumped = true;
+
+        try
+        {
+            string directory = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "LiveWall");
+            Directory.CreateDirectory(directory);
+            string path = Path.Combine(directory, "first-video-frame.png");
+            BitmapSource frame = BitmapSource.Create(
+                width,
+                height,
+                96,
+                96,
+                PixelFormats.Bgra32,
+                null,
+                pixels,
+                width * 4);
+            PngBitmapEncoder encoder = new PngBitmapEncoder();
+            encoder.Frames.Add(BitmapFrame.Create(frame));
+            using (FileStream stream = File.Create(path))
+            {
+                encoder.Save(stream);
+            }
+
+            AppLog.Write("first video frame written to " + path);
+        }
+        catch (Exception exception)
+        {
+            AppLog.WriteException("writing the first video frame failed", exception);
+        }
     }
 
     /// <summary>Sleeps until the next sample is due, so a video plays at its own speed instead of decoding flat out.</summary>
