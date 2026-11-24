@@ -46,28 +46,30 @@ lets every monitor have its own wallpaper, and automatically pauses playback whi
      top-level `WorkerW` appears behind them — that one becomes the parent;
    - **raised desktop** (Windows 11 24H2+, build 26100+): the icons stay inside `Progman`, the wallpaper is
      painted by a `WorkerW` **child** of `Progman`, and `Progman` itself is created with
-     `WS_EX_NOREDIRECTIONBITMAP` — there is no surface behind it, so anything parented into `Progman`
-     paints into nothing and gets no error. Following Microsoft's guidance for these builds, the surface
-     is parented into that `WorkerW` child (falling back to `Progman` + directly below `SHELLDLL_DefView`
-     when the shell has not created it yet), made a **layered** child with `SetLayeredWindowAttributes`
-     at alpha 255, and `SHELLDLL_DefView` is hidden/re-shown once so the shell drops the icon-layer
-     snapshot it caches across desktop switches. When the `WorkerW` appears later, the surfaces are
-     re-attached into it automatically.
-2. One `WallpaperSurface` (an `HwndSource` holding a `Grid` with a `Border` backdrop, two `Image` layers
-   and a video `Rectangle`) is made a child of that host per monitor — `GWL_STYLE` to
-   `WS_CHILD | WS_VISIBLE` FIRST, then `SetParent`, then `SetWindowPos` with the host's z-order anchor —
-   and positioned exactly on the monitor rectangle in physical pixels relative to the host's client area.
-3. Video is painted by a `MediaPlayer` through a `VideoDrawing` brush instead of a `MediaElement`:
-   a `MediaElement` expects to own the layout of a normal window, a brush renders wherever it is used.
-   The media session is opened once, paused when the monitor is covered, and **closed** (`Stop()` +
-   `Close()`) whenever the source changes, so switching to an image really unloads the video.
-3. `FullscreenWatcher` runs every 500 ms:
-   - foreground window covers its whole monitor rectangle → pause everything;
-   - otherwise every visible, non-cloaked top-level window that is maximized (or covers its monitor)
-     pauses the monitor it lives on. Shell windows, our own windows and virtual-desktop-cloaked windows
-     are ignored, and Windows' own `SHQueryUserNotificationState` full-screen signal is used as a
-     second opinion for exclusive-fullscreen games.
-4. Explorer restarts and monitor hot-plugs are detected and the surfaces are rebuilt automatically.
+     `WS_EX_NOREDIRECTIONBITMAP`. The wallpaper window is parented into that `WorkerW` child and inserted
+     directly below `SHELLDLL_DefView`, so icons stay on top. When the `WorkerW` appears later, the surfaces
+     are re-attached into it automatically.
+2. **The wallpaper is drawn with DirectComposition**, not with WPF: one child window per monitor
+   (a `Static` window created with `WS_EX_NOREDIRECTIONBITMAP`) carries a `IDCompositionTarget` /
+   `IDCompositionVisual` tree whose content is a **D3D11 flip-model composition swapchain**. Frames are
+   uploaded as BGRA8 (`UpdateSubresource` → `CopyResource` → `Present`) and the visual's transform does the
+   scaling (fill/fit/stretch/centre), so no shader is involved. On the raised desktop this is the *only*
+   arrangement the shell composes — WPF content (hardware **and** software) and plain GDI blits to a child of
+   the desktop host never reach the screen there, even though the window is attached at the right place with
+   the right size.
+3. Video is decoded by a **Media Foundation source reader** (`MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING`,
+   RGB32 output) on the surface's render thread, paced against sample timestamps and looped at end of
+   stream. Images are decoded with WPF imaging and converted to BGRA8. Playback of a video and the D3D
+   context share one dedicated thread per monitor, so neither the UI nor the decoder can block the other.
+4. `FullscreenWatcher` decides what is covered every 500 ms: a monitor showing a maximized (or
+   fullscreen-covering) window pauses only that monitor, a focused fullscreen app pauses everything. Windows
+   that belong to LiveWall itself, tool windows and virtual-desktop-cloaked windows are ignored, and
+   `SHQueryUserNotificationState` is used as a second opinion for exclusive-fullscreen games. Pausing stops
+   the decoder (the last frame stays on screen) and halts the slideshow timer.
+5. Explorer restarts and monitor hot-plugs are detected and the surfaces are rebuilt automatically.
+6. `COMPATIBILITY` lets you switch the drawing stack: DirectComposition (default), or the two WPF paths as
+   fallbacks for older builds. The app also walks that list by itself on first run, paints magenta, samples
+   the desktop pixels to prove whether anything arrived, and keeps the first combination that worked.
 
 ## Requirements
 
