@@ -201,7 +201,11 @@ public partial class App : Application
                 return;
             }
 
-            ProcessStartInfo startInfo = new ProcessStartInfo("cmd.exe", "/c timeout /t 1 >nul & start "" "" + executablePath + """);
+            // Built from a char literal on purpose: the command line needs real double quotes around the
+            // path and the empty title, and escaped quotes here are easy to get wrong.
+            const char quote = '\u0022';
+            string arguments = "/c timeout /t 1 >nul & start " + quote + quote + " " + quote + executablePath + quote;
+            ProcessStartInfo startInfo = new ProcessStartInfo("cmd.exe", arguments);
             startInfo.CreateNoWindow = true;
             startInfo.UseShellExecute = false;
             Process.Start(startInfo);
