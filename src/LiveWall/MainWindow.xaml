@@ -106,7 +106,12 @@
 
                         <StackPanel x:Name="ColorPanel" Margin="0,0,0,12">
                             <TextBlock Text="BACKGROUND COLOUR" FontSize="11" FontWeight="SemiBold" Foreground="#6A6A75" />
-                            <TextBox x:Name="ColorTextBox" Text="#000000" Width="140" HorizontalAlignment="Left" Margin="0,4,0,0" Padding="6,4" />
+                            <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                                <Border x:Name="ColorPreviewBorder" Width="28" Height="26" Background="#000000" BorderBrush="#C9C9D1" BorderThickness="1" />
+                                <TextBox x:Name="ColorTextBox" Text="#000000" Width="140" Margin="8,0,0,0" Padding="6,4"
+                                         VerticalContentAlignment="Center" TextChanged="ColorTextBox_TextChanged" />
+                                <Button Content="Pick…" Width="84" Margin="8,0,0,0" Padding="8,4" Click="PickColor_Click" />
+                            </StackPanel>
                         </StackPanel>
 
                         <TextBlock Text="PAUSE WHEN A MONITOR IS COVERED" FontSize="11" FontWeight="SemiBold" Foreground="#6A6A75" Margin="0,4,0,6" />

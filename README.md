@@ -10,7 +10,8 @@ lets every monitor have its own wallpaper, and automatically pauses playback whi
   - a still image,
   - a slideshow folder (optional subfolders, shuffle, 5–600 s interval, cross-fade),
   - a looping video (muted by default, volume configurable),
-  - or a solid colour (used as the fallback while an image/video is loading or missing).
+  - or a solid colour, picked with the same colour dialog SubtitleForge uses (hue/saturation square,
+    alpha ramp, presets, hex field — used as the fallback while an image/video is loading or missing).
 - **Multi-monitor**: either one wallpaper for every monitor, or a separate wallpaper per monitor
   (`Display 1`, `Display 2`, … each with its own source, scaling and interval).
 - **Pause when covered** (the point of the app):
@@ -41,9 +42,11 @@ lets every monitor have its own wallpaper, and automatically pauses playback whi
 1. `DesktopWindowService` sends `0x052C` to `Progman` so Explorer spawns the `WorkerW` that lives behind
    the icons, then resolves that window (Windows 10: the `WorkerW` after `SHELLDLL_DefView`;
    Windows 11: the `WorkerW` inside `Progman`; last resort: `Progman` itself).
-2. One `WallpaperSurface` (an `HwndSource` with a `WS_CHILD | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW`
-   window holding a `Grid` with two `Image` layers and a `MediaElement`) is parented into that host per
-   monitor and positioned exactly on the monitor rectangle in physical pixels.
+2. One `WallpaperSurface` (an `HwndSource` holding a `Grid` with two `Image` layers and a `MediaElement`)
+   is made a child of that host per monitor — `GWL_STYLE` to `WS_CHILD | WS_VISIBLE` and
+   `WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW` FIRST, then `SetParent`, then `SetWindowPos` with `HWND_BOTTOM`
+   (so a Progman fallback cannot cover the icons) — and positioned exactly on the monitor rectangle in
+   physical pixels. If the resolved host refuses, `Progman` itself is tried before reporting failure.
 3. `FullscreenWatcher` runs every 500 ms:
    - foreground window covers its whole monitor rectangle → pause everything;
    - otherwise every visible, non-cloaked top-level window that is maximized (or covers its monitor)
@@ -70,3 +73,4 @@ artifact.
   (H.264 MP4, WMV, …) works; exotic containers may not.
 - The desktop remains fully interactive: the surfaces never take focus, clicks or Alt+Tab slots.
 - Diagnostics: `%LocalAppData%\LiveWall\crash.log` (attach failures, Explorer restarts, media errors).
+  An attach failure names the host window class and the exact Win32 error `SetParent` returned.

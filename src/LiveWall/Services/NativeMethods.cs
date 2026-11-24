@@ -7,7 +7,11 @@ namespace LiveWall.Services;
 
 internal static class NativeMethods
 {
+    internal const int GWL_STYLE = -16;
     internal const int GWL_EXSTYLE = -20;
+
+    /// <summary>SetWindowPos special handle: put the window at the bottom of its parent's z-order.</summary>
+    internal const int HWND_BOTTOM = 1;
 
     internal const uint SWP_NOZORDER = 0x0004;
     internal const uint SWP_NOACTIVATE = 0x0010;
@@ -51,6 +55,12 @@ internal static class NativeMethods
 
     [DllImport("user32.dll")]
     internal static extern IntPtr GetParent(IntPtr windowHandle);
+
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW", SetLastError = true)]
+    internal static extern IntPtr SetWindowLongPtr(IntPtr windowHandle, int index, IntPtr newValue);
+
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW", SetLastError = true)]
+    internal static extern IntPtr GetWindowLongPtr(IntPtr windowHandle, int index);
 
     [DllImport("user32.dll", SetLastError = true)]
     internal static extern bool SetWindowPos(IntPtr windowHandle, IntPtr insertAfter, int x, int y, int width, int height, uint flags);

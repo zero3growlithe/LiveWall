@@ -1,6 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Interop;
@@ -24,6 +27,7 @@ public sealed class WallpaperSurface : IDisposable
     private const int NoActivateExtendedStyle = 0x08000000;
     private const int ToolWindowExtendedStyle = 0x00000080;
     private const int FadeDurationMilliseconds = 450;
+    private const int OffscreenCoordinate = -32000;
 
     private readonly string _deviceName;
     private readonly Grid _root;
@@ -115,11 +119,10 @@ public sealed class WallpaperSurface : IDisposable
         try
         {
             HwndSourceParameters parameters = new HwndSourceParameters("LiveWallSurface_" + SanitizeWindowName(_deviceName));
-            parameters.WindowStyle = PopupWindowStyle | ChildWindowStyle | VisibleWindowStyle;
+            parameters.WindowStyle = PopupWindowStyle | VisibleWindowStyle;
             parameters.ExtendedWindowStyle = NoActivateExtendedStyle | ToolWindowExtendedStyle;
-            parameters.ParentWindow = workerWindow;
-            parameters.PositionX = 0;
-            parameters.PositionY = 0;
+            parameters.PositionX = OffscreenCoordinate;
+            parameters.PositionY = OffscreenCoordinate;
             parameters.Width = 1;
             parameters.Height = 1;
             parameters.UsesPerPixelOpacity = false;
@@ -127,21 +130,15 @@ public sealed class WallpaperSurface : IDisposable
             _interopSource = new HwndSource(parameters);
             _interopSource.RootVisual = _root;
 
-            if (NativeMethods.GetParent(_interopSource.Handle) != workerWindow)
+            if (!TryParentToDesktopHost(_interopSource.Handle, workerWindow))
             {
-                NativeMethods.SetParent(_interopSource.Handle, workerWindow);
-            }
-
-            if (NativeMethods.GetParent(_interopSource.Handle) != workerWindow)
-            {
-                AttachFailureReason = "the desktop window rejected the wallpaper host (SetParent failed)";
                 _interopSource.Dispose();
                 _interopSource = null;
                 return false;
             }
 
             PlaceWindow(monitorRectangle, workerRectangle);
-            AppLog.Write("surface attached for " + _deviceName + " at " + monitorRectangle);
+            AppLog.Write("surface attached for " + _deviceName + " at " + monitorRectangle + " under host 0x" + workerWindow.ToInt64().ToString("X"));
             return true;
         }
         catch (Exception exception)
@@ -156,6 +153,53 @@ public sealed class WallpaperSurface : IDisposable
 
             return false;
         }
+    }
+
+    /// <summary>
+    /// Turns the surface into a real child of the desktop host. The WS_CHILD style MUST be applied before
+    /// SetParent: a window re-parented into another process without it is treated as an owned popup and
+    /// stays invisible, and re-parenting a plain WS_POPUP window is what failed on the first release.
+    /// When the resolved host refuses, Progman itself is tried as a fallback.
+    /// </summary>
+    private bool TryParentToDesktopHost(IntPtr surfaceHandle, IntPtr workerWindow)
+    {
+        NativeMethods.SetWindowLongPtr(surfaceHandle, NativeMethods.GWL_STYLE, new IntPtr(ChildWindowStyle | VisibleWindowStyle));
+        NativeMethods.SetWindowLongPtr(surfaceHandle, NativeMethods.GWL_EXSTYLE, new IntPtr(NoActivateExtendedStyle | ToolWindowExtendedStyle));
+
+        IntPtr progmanWindow = NativeMethods.FindWindow("Progman", null);
+        IntPtr[] candidates = new IntPtr[] { workerWindow, progmanWindow };
+        string lastFailure = "no desktop host window is available";
+
+        for (int index = 0; index < candidates.Length; index++)
+        {
+            IntPtr candidate = candidates[index];
+            if (candidate == IntPtr.Zero)
+            {
+                continue;
+            }
+
+            NativeMethods.SetParent(surfaceHandle, candidate);
+            int error = Marshal.GetLastWin32Error();
+            if (NativeMethods.GetParent(surfaceHandle) == candidate)
+            {
+                return true;
+            }
+
+            lastFailure = "SetParent(0x" + candidate.ToInt64().ToString("X")
+                + " [" + GetWindowClassName(candidate) + "]) failed with Win32 error "
+                + error.ToString(CultureInfo.InvariantCulture);
+        }
+
+        AttachFailureReason = lastFailure;
+        AppLog.Write("surface attach failed for " + _deviceName + ": " + lastFailure);
+        return false;
+    }
+
+    private static string GetWindowClassName(IntPtr windowHandle)
+    {
+        StringBuilder builder = new StringBuilder(256);
+        NativeMethods.GetClassName(windowHandle, builder, builder.Capacity);
+        return builder.ToString();
     }
 
     public void UpdateRectangle(RECT monitorRectangle, RECT workerRectangle)
@@ -331,14 +375,16 @@ public sealed class WallpaperSurface : IDisposable
 
         int x = monitorRectangle.Left - workerRectangle.Left;
         int y = monitorRectangle.Top - workerRectangle.Top;
+        // HWND_BOTTOM matters when the fallback parent is Progman: a new child would otherwise sit on top of
+        // SHELLDLL_DefView and cover the desktop icons.
         NativeMethods.SetWindowPos(
             _interopSource.Handle,
-            IntPtr.Zero,
+            new IntPtr(NativeMethods.HWND_BOTTOM),
             x,
             y,
             Math.Max(monitorRectangle.Width, 1),
             Math.Max(monitorRectangle.Height, 1),
-            NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_SHOWWINDOW | NativeMethods.SWP_FRAMECHANGED);
+            NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_SHOWWINDOW | NativeMethods.SWP_FRAMECHANGED);
     }
 
     private static string SanitizeWindowName(string deviceName)
@@ -458,22 +504,10 @@ public sealed class WallpaperSurface : IDisposable
 
     private static Brush CreateBackgroundBrush(string colorText)
     {
-        try
-        {
-            object converted = ColorConverter.ConvertFromString(string.IsNullOrWhiteSpace(colorText) ? "#000000" : colorText);
-            if (converted is Color color)
-            {
-                SolidColorBrush brush = new SolidColorBrush(color);
-                brush.Freeze();
-                return brush;
-            }
-        }
-        catch (Exception)
-        {
-            // An invalid colour string falls back to black; nothing to log beyond that.
-        }
-
-        return Brushes.Black;
+        Color color = ColorParser.ParseHexColor(colorText, Colors.Black);
+        SolidColorBrush brush = new SolidColorBrush(color);
+        brush.Freeze();
+        return brush;
     }
 
     // ── Video ──

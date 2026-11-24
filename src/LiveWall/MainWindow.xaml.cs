@@ -7,6 +7,8 @@ using System.Globalization;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Media;
+using LiveWall.Controls;
 using LiveWall.Models;
 using LiveWall.Services;
 using Microsoft.Win32;
@@ -416,6 +418,38 @@ public partial class MainWindow : Window
             PathTextBox.Text = fileDialog.FileName;
             SaveEditor();
         }
+    }
+
+    private void PickColor_Click(object sender, RoutedEventArgs e)
+    {
+        Color initial = ColorParser.ParseHexColor(ColorTextBox.Text, Colors.Black);
+        Color picked;
+        if (!ColorPickerWindow.TryPick(this, initial, out picked))
+        {
+            return;
+        }
+
+        ColorTextBox.Text = ColorParser.FormatHex(picked);
+        UpdateColorPreview();
+        SaveEditor();
+    }
+
+    private void ColorTextBox_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        UpdateColorPreview();
+    }
+
+    private void UpdateColorPreview()
+    {
+        if (ColorPreviewBorder == null)
+        {
+            return;
+        }
+
+        Color color = ColorParser.ParseHexColor(ColorTextBox.Text, Colors.Black);
+        SolidColorBrush brush = new SolidColorBrush(color);
+        brush.Freeze();
+        ColorPreviewBorder.Background = brush;
     }
 
     private void TogglePause_Click(object sender, RoutedEventArgs e)
