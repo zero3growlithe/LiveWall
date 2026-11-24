@@ -99,7 +99,8 @@ public sealed class CompositionSurface : IWallpaperSurface
     private bool _firstFrameLogged;
     private bool _videoGeometryLogged;
     private bool _firstVideoFrameDumped;
-    private int _lastReportedContentHeight = -1;
+    private bool _contentBoxValid;
+    private ContentBox _contentBox;
     private long _framesPresented;
     private volatile bool _renderThreadAlive;
 
@@ -630,7 +631,8 @@ public sealed class CompositionSurface : IWallpaperSurface
                             _isVideoOpen = true;
                             _videoGeometryLogged = false;
                             _firstVideoFrameDumped = false;
-                            _lastReportedContentHeight = -1;
+                            _contentBoxValid = false;
+                            _contentBox = default;
                             firstSampleTime = -1;
                             playbackStartTimestamp = 0;
                             presenter.InvalidateTransform();
@@ -709,17 +711,26 @@ public sealed class CompositionSurface : IWallpaperSurface
 
                     try
                     {
-                        int contentTop;
-                        int contentHeight;
-                        byte[] presented = CropLetterboxRows(
-                            pixels,
-                            video.Width,
-                            video.Height,
-                            out contentTop,
-                            out contentHeight);
-                        ReportCroppedVideo(video, contentTop, contentHeight);
-                        presenter.ShowPixels(presented, video.Width, contentHeight, stretch);
-                        LogFirstFrame(presenter, video.Width, contentHeight, stretch, _description);
+                        byte[] presented = pixels;
+                        int presentedWidth = video.Width;
+                        int presentedHeight = video.Height;
+
+                        if (!_contentBoxValid && TryMeasureContentBox(pixels, video.Width, video.Height, out ContentBox measured))
+                        {
+                            _contentBox = measured;
+                            _contentBoxValid = true;
+                            ReportContentBox(video, measured);
+                        }
+
+                        if (_contentBoxValid && _contentBox.IsCrop)
+                        {
+                            presentedWidth = _contentBox.Width;
+                            presentedHeight = _contentBox.Height;
+                            presented = CropToBox(pixels, video.Width, _contentBox);
+                        }
+
+                        presenter.ShowPixels(presented, presentedWidth, presentedHeight, stretch);
+                        LogFirstFrame(presenter, presentedWidth, presentedHeight, stretch, _description);
                         LogVideoGeometry(video);
                         DumpFirstVideoFrame(pixels, video.Width, video.Height);
                         Interlocked.Increment(ref _framesPresented);
@@ -841,53 +852,70 @@ public sealed class CompositionSurface : IWallpaperSurface
     }
 
     /// <summary>
-    /// Drops the all-black rows above and below the picture. A decoder can hand back frames that are taller
-    /// than the image inside them, and the leftover rows are part of the frame data, so no stretch mode can
-    /// hide them — the band has to be cropped before the frame reaches the visual. Returns the frame itself
-    /// when there is nothing to crop, so the common case costs nothing.
+    /// Finds the rectangle that actually holds picture data. A decoder can hand back a buffer whose frame size
+    /// says one thing while the image sits in part of it, and that is fatal for the layout: every stretch mode
+    /// divides the window by the source size, so a wrong source size zooms, crops or offsets the picture no
+    /// matter which mode is chosen. Measured once per video, then reused, because the geometry of a stream does
+    /// not change from frame to frame.
     /// </summary>
-    private static byte[] CropLetterboxRows(byte[] pixels, int width, int height, out int contentTop, out int contentHeight)
+    private bool TryMeasureContentBox(byte[] pixels, int width, int height, out ContentBox box)
     {
-        contentTop = 0;
-        contentHeight = height;
+        box = default;
 
         int rowBytes = width * 4;
-        if (rowBytes <= 0 || height <= 32 || pixels.Length < rowBytes * height)
+        if (rowBytes <= 0 || height < 16 || pixels.Length < rowBytes * height)
         {
-            return pixels;
+            return false;
         }
 
-        int maximumTrim = Math.Max(1, height / 4);
+        int maximumTrimRows = Math.Max(1, (height * 45) / 100);
         int top = 0;
-        while (top < maximumTrim && IsBlackRow(pixels, rowBytes, top))
+        while (top < maximumTrimRows && IsBlackRow(pixels, rowBytes, width, top))
         {
             top++;
         }
 
         int bottom = height;
-        while (((height - bottom) < maximumTrim) && ((bottom - top) > 32) && IsBlackRow(pixels, rowBytes, bottom - 1))
+        while (((height - bottom) < maximumTrimRows) && ((bottom - top) > 16) && IsBlackRow(pixels, rowBytes, width, bottom - 1))
         {
             bottom--;
         }
 
-        int rows = bottom - top;
-        if ((top == 0 && rows == height) || rows < 32)
+        int maximumTrimColumns = Math.Max(1, (width * 45) / 100);
+        int left = 0;
+        while (left < maximumTrimColumns && IsBlackColumn(pixels, rowBytes, width, left, top, bottom))
         {
-            return pixels;
+            left++;
         }
 
-        byte[] cropped = new byte[rows * rowBytes];
-        Buffer.BlockCopy(pixels, top * rowBytes, cropped, 0, cropped.Length);
-        contentTop = top;
-        contentHeight = rows;
-        return cropped;
+        int right = width;
+        while (((width - right) < maximumTrimColumns) && ((right - left) > 16) && IsBlackColumn(pixels, rowBytes, width, right - 1, top, bottom))
+        {
+            right--;
+        }
+
+        int boxWidth = right - left;
+        int boxHeight = bottom - top;
+        if (boxWidth < 16 || boxHeight < 16)
+        {
+            return false;
+        }
+
+        // A nearly-empty measurement is a black frame, not a layout: ignore it and try again next frame.
+        if ((long)boxWidth * boxHeight * 4L < (long)width * height * 4L / 4L)
+        {
+            return false;
+        }
+
+        box = new ContentBox(left, top, boxWidth, boxHeight, width, height);
+        return true;
     }
 
     /// <summary>True when the sampled pixels of a row are all black, which is what a letterbox band looks like.</summary>
-    private static bool IsBlackRow(byte[] pixels, int rowBytes, int rowIndex)
+    private static bool IsBlackRow(byte[] pixels, int rowBytes, int width, int rowIndex)
     {
         int offset = rowIndex * rowBytes;
-        int last = offset + rowBytes - 4;
+        int last = offset + (width * 4) - 4;
         for (int index = offset; index <= last; index += 16)
         {
             if (pixels[index] > 8 || pixels[index + 1] > 8 || pixels[index + 2] > 8)
@@ -899,31 +927,66 @@ public sealed class CompositionSurface : IWallpaperSurface
         return true;
     }
 
-    private void ReportCroppedVideo(MediaFoundationVideo video, int contentTop, int contentHeight)
+    /// <summary>True when the sampled pixels of a column are all black between two rows.</summary>
+    private static bool IsBlackColumn(byte[] pixels, int rowBytes, int width, int column, int top, int bottom)
     {
-        if (_lastReportedContentHeight == contentHeight)
+        if (column < 0 || column >= width)
         {
-            return;
+            return true;
         }
 
-        _lastReportedContentHeight = contentHeight;
-        if (contentHeight == video.Height)
+        int rowStep = Math.Max(1, (bottom - top) / 64);
+        for (int row = top; row < bottom; row += rowStep)
+        {
+            int index = (row * rowBytes) + (column * 4);
+            if (pixels[index] > 8 || pixels[index + 1] > 8 || pixels[index + 2] > 8)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>Copies the given rectangle of a frame into a fresh packed BGRA buffer.</summary>
+    private static byte[] CropToBox(byte[] pixels, int width, ContentBox box)
+    {
+        int sourceRowBytes = width * 4;
+        int targetRowBytes = box.Width * 4;
+        byte[] cropped = new byte[box.Height * targetRowBytes];
+
+        for (int row = 0; row < box.Height; row++)
+        {
+            int sourceOffset = ((box.Top + row) * sourceRowBytes) + (box.Left * 4);
+            Buffer.BlockCopy(pixels, sourceOffset, cropped, row * targetRowBytes, targetRowBytes);
+        }
+
+        return cropped;
+    }
+
+    private void ReportContentBox(MediaFoundationVideo video, ContentBox box)
+    {
+        if (!box.IsCrop)
         {
             AppLog.Write(string.Format(
                 CultureInfo.InvariantCulture,
-                "video fills its frame for {0}: {1} rows, nothing to crop",
+                "video content box for {0}: the picture fills the whole {1}x{2} frame",
                 _deviceName,
-                contentHeight));
+                box.FrameWidth,
+                box.FrameHeight));
             return;
         }
 
         AppLog.Write(string.Format(
             CultureInfo.InvariantCulture,
-            "video letterbox cropped for {0}: kept rows {1}..{2} of {3}",
+            "video content box for {0}: picture is {1}x{2} at {3},{4} inside a {5}x{6} frame — drawing the picture only",
             _deviceName,
-            contentTop,
-            contentTop + contentHeight - 1,
-            video.Height));
+            box.Width,
+            box.Height,
+            box.Left,
+            box.Top,
+            box.FrameWidth,
+            box.FrameHeight));
     }
 
     /// <summary>
@@ -1042,5 +1105,45 @@ public sealed class CompositionSurface : IWallpaperSurface
 
         _renderThreadAlive = false;
         DisposeWindow();
+    }
+
+    // ── Nested types ──
+
+    /// <summary>
+    /// The rectangle of a decoded frame that holds picture instead of black padding, and the frame size it was
+    /// measured in.
+    /// </summary>
+    private readonly struct ContentBox
+    {
+        public ContentBox(int left, int top, int width, int height, int frameWidth, int frameHeight)
+        {
+            Left = left;
+            Top = top;
+            Width = width;
+            Height = height;
+            FrameWidth = frameWidth;
+            FrameHeight = frameHeight;
+        }
+
+        public int Left { get; }
+
+        public int Top { get; }
+
+        public int Width { get; }
+
+        public int Height { get; }
+
+        public int FrameWidth { get; }
+
+        public int FrameHeight { get; }
+
+        /// <summary>True when the picture is smaller than the frame, so the frame has to be cropped.</summary>
+        public bool IsCrop
+        {
+            get
+            {
+                return Left > 0 || Top > 0 || Width < FrameWidth || Height < FrameHeight;
+            }
+        }
     }
 }
