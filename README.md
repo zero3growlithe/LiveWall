@@ -32,21 +32,32 @@ lets every monitor have its own wallpaper, and automatically pauses playback whi
 
 | Control | Meaning |
 | --- | --- |
-| `Apply` | Pushes the current editor state to the desktop and saves it. |
+| `Apply` | Pushes the whole settings page to the desktop and saves it (the editor applies itself as you change it). |
+| `Diagnostics…` | Desktop topology, per-surface state, what the screen actually shows, plus the visibility test. |
 | `Pause all` / `Resume all` | Manual override, independent of the automatic detection. |
 | `Hide to tray` | Keeps the wallpaper running, removes the window. |
 | `Same wallpaper on every monitor` | Shared configuration; uncheck to edit each monitor separately. |
 
 ## How it works
 
-1. `DesktopWindowService` sends `0x052C` to `Progman` so Explorer spawns the `WorkerW` that lives behind
-   the icons, then resolves that window (Windows 10: the `WorkerW` after `SHELLDLL_DefView`;
-   Windows 11: the `WorkerW` inside `Progman`; last resort: `Progman` itself).
-2. One `WallpaperSurface` (an `HwndSource` holding a `Grid` with two `Image` layers and a `MediaElement`)
-   is made a child of that host per monitor — `GWL_STYLE` to `WS_CHILD | WS_VISIBLE` and
-   `WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW` FIRST, then `SetParent`, then `SetWindowPos` with `HWND_BOTTOM`
-   (so a Progman fallback cannot cover the icons) — and positioned exactly on the monitor rectangle in
-   physical pixels. If the resolved host refuses, `Progman` itself is tried before reporting failure.
+1. `DesktopWindowService` sends `0x052C` to `Progman` and then detects which desktop layout the shell
+   currently exposes, because the two are not interchangeable:
+   - **classic** (Windows 10, 11 up to 23H2): the icons move into a top-level `WorkerW` and an empty
+     top-level `WorkerW` appears behind them — that one becomes the parent;
+   - **raised desktop** (Windows 11 24H2+, build 26100+): the icons stay inside `Progman`, a `WorkerW`
+     child of `Progman` paints the wallpaper, and `Progman` is created with `WS_EX_NOREDIRECTIONBITMAP`.
+     The surface is then parented to `Progman`, slotted directly below `SHELLDLL_DefView`, pushed onto
+     the shell's `WorkerW`, and made a **layered** child — without that the shell never composes it;
+     `SHELLDLL_DefView` is then hidden/re-shown once so the shell drops the icon-layer snapshot it
+     caches across desktop switches.
+2. One `WallpaperSurface` (an `HwndSource` holding a `Grid` with a `Border` backdrop, two `Image` layers
+   and a video `Rectangle`) is made a child of that host per monitor — `GWL_STYLE` to
+   `WS_CHILD | WS_VISIBLE` FIRST, then `SetParent`, then `SetWindowPos` with the host's z-order anchor —
+   and positioned exactly on the monitor rectangle in physical pixels relative to the host's client area.
+3. Video is painted by a `MediaPlayer` through a `VideoDrawing` brush instead of a `MediaElement`:
+   a `MediaElement` expects to own the layout of a normal window, a brush renders wherever it is used.
+   The media session is opened once, paused when the monitor is covered, and **closed** (`Stop()` +
+   `Close()`) whenever the source changes, so switching to an image really unloads the video.
 3. `FullscreenWatcher` runs every 500 ms:
    - foreground window covers its whole monitor rectangle → pause everything;
    - otherwise every visible, non-cloaked top-level window that is maximized (or covers its monitor)
@@ -69,8 +80,14 @@ artifact.
 ## Notes
 
 - Playback stops only for slideshows and videos — a still image has nothing to pause.
-- Video decoding uses WPF's `MediaElement` (Media Foundation), so anything Windows Media Player can play
-  (H.264 MP4, WMV, …) works; exotic containers may not.
+- Video decoding uses `MediaPlayer` (Media Foundation), so anything Windows Media Player can play
+  (H.264 MP4, WMV, …) works; exotic containers may not. Every state is reported honestly in the status
+  line: `opening…`, `playing (1920x1080, muted, looping)`, or `playback failed: <reason>`.
+- Changing anything in the editor (source kind, file, folder, colour, scaling, mute) is applied
+  immediately; `Apply` only exists for the settings that are not part of the editor.
+- Windows 11 24H2/25H2 block ordinary child windows from being composed under the desktop. The app
+  handles that topology, and `Diagnostics…` → **Test visibility** proves whether pixels really reach the
+  screen: it paints magenta, samples the monitor back and reports `VISIBLE` / `NOT VISIBLE` per display.
 - The desktop remains fully interactive: the surfaces never take focus, clicks or Alt+Tab slots.
 - Diagnostics: `%LocalAppData%\LiveWall\crash.log` (attach failures, Explorer restarts, media errors).
   An attach failure names the host window class and the exact Win32 error `SetParent` returned.

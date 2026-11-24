@@ -176,6 +176,7 @@ public partial class MainWindow : Window
 
         _settings.SameForAllMonitors = SameForAllCheckBox.IsChecked == true;
         LoadEditor();
+        ApplyEditorChanges();
     }
 
     // ── Editor <-> model ──
@@ -394,7 +395,7 @@ public partial class MainWindow : Window
             if (folderResult == true)
             {
                 PathTextBox.Text = folderDialog.FolderName;
-                SaveEditor();
+                ApplyEditorChanges();
             }
 
             return;
@@ -416,8 +417,47 @@ public partial class MainWindow : Window
         if (fileResult == true)
         {
             PathTextBox.Text = fileDialog.FileName;
-            SaveEditor();
+            ApplyEditorChanges();
         }
+    }
+
+    /// <summary>
+    /// Saves the editor and pushes it to the engine right away. This is what makes changing the source from a
+    /// video to an image unload the video instead of leaving it decoding behind the desktop.
+    /// </summary>
+    private void ApplyEditorChanges()
+    {
+        if (_suppressEditorEvents)
+        {
+            return;
+        }
+
+        SaveEditor();
+        SettingsService.Save(_settings);
+        _engine.ApplySettings(_settings);
+        UpdateStatuses();
+    }
+
+    private void PathTextBox_LostFocus(object sender, RoutedEventArgs e)
+    {
+        ApplyEditorChanges();
+    }
+
+    private void StretchComboBox_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        ApplyEditorChanges();
+    }
+
+    private void MuteCheckBox_Changed(object sender, RoutedEventArgs e)
+    {
+        ApplyEditorChanges();
+    }
+
+    private void Diagnostics_Click(object sender, RoutedEventArgs e)
+    {
+        DiagnosticsWindow window = new DiagnosticsWindow(_engine);
+        window.Owner = this;
+        window.ShowDialog();
     }
 
     private void PickColor_Click(object sender, RoutedEventArgs e)
@@ -431,7 +471,7 @@ public partial class MainWindow : Window
 
         ColorTextBox.Text = ColorParser.FormatHex(picked);
         UpdateColorPreview();
-        SaveEditor();
+        ApplyEditorChanges();
     }
 
     private void ColorTextBox_TextChanged(object sender, TextChangedEventArgs e)
@@ -500,6 +540,69 @@ public partial class MainWindow : Window
         }
 
         UpdateEditorVisibility();
+        ClearPathIfWrongKind();
+        ApplyEditorChanges();
+    }
+
+    /// <summary>
+    /// Switching from "video file" to "image file" must not leave the old .mp4 in the box: the engine would
+    /// be asked for an image at a video path. The path is dropped and the status says no file is selected.
+    /// </summary>
+    private void ClearPathIfWrongKind()
+    {
+        WallpaperKind kind = ParseKind();
+        string path = PathTextBox.Text == null ? string.Empty : PathTextBox.Text.Trim();
+        if (kind == WallpaperKind.SolidColor || path.Length == 0)
+        {
+            return;
+        }
+
+        bool matchesKind;
+        if (kind == WallpaperKind.Slideshow)
+        {
+            matchesKind = Directory.Exists(path);
+        }
+        else
+        {
+            string extension = Path.GetExtension(path);
+            if (kind == WallpaperKind.Video)
+            {
+                matchesKind = IsExtensionOneOf(extension, ".mp4", ".wmv", ".avi", ".mkv", ".mov", ".m4v", ".webm");
+            }
+            else
+            {
+                matchesKind = IsExtensionOneOf(extension, ".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tif", ".tiff", ".webp");
+            }
+        }
+
+        if (matchesKind)
+        {
+            return;
+        }
+
+        bool wasSuppressed = _suppressEditorEvents;
+        _suppressEditorEvents = true;
+        try
+        {
+            PathTextBox.Text = string.Empty;
+        }
+        finally
+        {
+            _suppressEditorEvents = wasSuppressed;
+        }
+    }
+
+    private static bool IsExtensionOneOf(string extension, params string[] allowed)
+    {
+        for (int index = 0; index < allowed.Length; index++)
+        {
+            if (string.Equals(extension, allowed[index], StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private void IntervalSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)

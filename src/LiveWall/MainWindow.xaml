@@ -19,6 +19,7 @@
             <TextBlock DockPanel.Dock="Left" Text="LiveWall" FontSize="20" FontWeight="Bold" VerticalAlignment="Center" />
             <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
                 <Button x:Name="TogglePauseButton" Content="Pause all" Width="112" Padding="8,5" Margin="6,0,0,0" Click="TogglePause_Click" />
+                <Button Content="Diagnostics…" Width="112" Padding="8,5" Margin="6,0,0,0" Click="Diagnostics_Click" />
                 <Button Content="Apply" Width="90" Padding="8,5" Margin="6,0,0,0" FontWeight="SemiBold" Click="Apply_Click" />
                 <Button Content="Hide to tray" Width="112" Padding="8,5" Margin="6,0,0,0" Click="Tray_Click" />
             </StackPanel>
@@ -75,12 +76,13 @@
                                 <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
-                            <TextBox x:Name="PathTextBox" Grid.Column="0" Padding="6,4" VerticalContentAlignment="Center" />
+                            <TextBox x:Name="PathTextBox" Grid.Column="0" Padding="6,4" VerticalContentAlignment="Center"
+                                     LostFocus="PathTextBox_LostFocus" />
                             <Button Grid.Column="1" Content="Browse…" Width="94" Margin="8,0,0,0" Padding="8,4" Click="Browse_Click" />
                         </Grid>
 
                         <TextBlock Text="Scaling" FontSize="11" FontWeight="SemiBold" Foreground="#6A6A75" />
-                        <ComboBox x:Name="StretchComboBox" Margin="0,4,0,12">
+                        <ComboBox x:Name="StretchComboBox" Margin="0,4,0,12" SelectionChanged="StretchComboBox_Changed">
                             <ComboBoxItem Content="Fill (crop, no distortion)" Tag="Fill" />
                             <ComboBoxItem Content="Fit (letterbox)" Tag="Fit" />
                             <ComboBoxItem Content="Stretch (may distort)" Tag="Stretch" />
@@ -98,7 +100,8 @@
 
                         <StackPanel x:Name="VideoPanel" Margin="0,0,0,12">
                             <TextBlock Text="VIDEO" FontSize="11" FontWeight="SemiBold" Foreground="#6A6A75" />
-                            <CheckBox x:Name="MuteCheckBox" Content="Mute audio" Margin="0,6,0,0" />
+                            <CheckBox x:Name="MuteCheckBox" Content="Mute audio" Margin="0,6,0,0"
+                                      Checked="MuteCheckBox_Changed" Unchecked="MuteCheckBox_Changed" />
                             <TextBlock x:Name="VolumeValueTextBlock" Text="Volume 0%" Margin="0,10,0,2" />
                             <Slider x:Name="VolumeSlider" Minimum="0" Maximum="100" Value="0" TickFrequency="5"
                                     IsSnapToTickEnabled="True" ValueChanged="VolumeSlider_ValueChanged" />

@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
+using System.Text;
 using System.Threading;
 using System.Windows.Threading;
 using LiveWall.Models;
@@ -114,10 +116,68 @@ public sealed class WallpaperEngine : IDisposable
             return;
         }
 
-        _monitors = MonitorService.GetMonitors();
-        RebuildSurfaces();
+        List<MonitorDescriptor> monitors = MonitorService.GetMonitors();
+        if (MonitorSetChanged(monitors))
+        {
+            _monitors = monitors;
+            RebuildSurfaces();
+        }
+        else
+        {
+            ApplyConfiguredSources();
+        }
+
         ApplyPlaybackState(ReevaluateNow());
         RaiseStatusChanged();
+    }
+
+    /// <summary>
+    /// Re-applies the configured source to the surfaces that already exist. Applying a source is a full
+    /// switch — the current video is stopped and closed, the slideshow timer is halted, the image layers are
+    /// cleared — so changing from video to image really unloads the video instead of leaving it running.
+    /// </summary>
+    private void ApplyConfiguredSources()
+    {
+        if (!_desktopWindowService.EnsureWorkerWindow())
+        {
+            return;
+        }
+
+        AttachMissingSurfaces();
+
+        List<string> staleDevices = new List<string>();
+        foreach (KeyValuePair<string, WallpaperSurface> pair in _surfaces)
+        {
+            if (MonitorExists(pair.Key))
+            {
+                pair.Value.ApplySource(_settings.SourceForMonitor(pair.Key));
+            }
+            else
+            {
+                staleDevices.Add(pair.Key);
+            }
+        }
+
+        for (int index = 0; index < staleDevices.Count; index++)
+        {
+            WallpaperSurface surface = _surfaces[staleDevices[index]];
+            surface.DescriptionChanged -= Surface_DescriptionChanged;
+            surface.Dispose();
+            _surfaces.Remove(staleDevices[index]);
+        }
+    }
+
+    private bool MonitorExists(string deviceName)
+    {
+        for (int index = 0; index < _monitors.Count; index++)
+        {
+            if (string.Equals(_monitors[index].DeviceName, deviceName, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     public string GetMonitorStatus(string deviceName)
@@ -402,20 +462,21 @@ public sealed class WallpaperEngine : IDisposable
             return;
         }
 
-        IntPtr workerWindow = _desktopWindowService.WorkerWindow;
+        DesktopHost host = _desktopWindowService.Host;
         RECT workerRectangle = _desktopWindowService.GetWorkerRectangle();
         int attachedCount = 0;
 
         foreach (MonitorDescriptor monitor in _monitors)
         {
             WallpaperSurface surface = new WallpaperSurface(monitor.DeviceName);
-            if (!surface.Attach(workerWindow, monitor.MonitorRectangle, workerRectangle))
+            if (!surface.Attach(host, monitor.MonitorRectangle, workerRectangle))
             {
                 _attachFailures[monitor.DeviceName] = surface.AttachFailureReason;
                 surface.Dispose();
                 continue;
             }
 
+            surface.DescriptionChanged += Surface_DescriptionChanged;
             surface.ApplySource(_settings.SourceForMonitor(monitor.DeviceName));
             _surfaces[monitor.DeviceName] = surface;
             attachedCount++;
@@ -438,7 +499,7 @@ public sealed class WallpaperEngine : IDisposable
             return;
         }
 
-        IntPtr workerWindow = _desktopWindowService.WorkerWindow;
+        DesktopHost host = _desktopWindowService.Host;
         RECT workerRectangle = _desktopWindowService.GetWorkerRectangle();
         bool allAttached = true;
 
@@ -451,7 +512,7 @@ public sealed class WallpaperEngine : IDisposable
 
             _attachFailures.Remove(monitor.DeviceName);
             WallpaperSurface surface = new WallpaperSurface(monitor.DeviceName);
-            if (!surface.Attach(workerWindow, monitor.MonitorRectangle, workerRectangle))
+            if (!surface.Attach(host, monitor.MonitorRectangle, workerRectangle))
             {
                 _attachFailures[monitor.DeviceName] = surface.AttachFailureReason;
                 surface.Dispose();
@@ -459,6 +520,7 @@ public sealed class WallpaperEngine : IDisposable
                 continue;
             }
 
+            surface.DescriptionChanged += Surface_DescriptionChanged;
             surface.ApplySource(_settings.SourceForMonitor(monitor.DeviceName));
             _surfaces[monitor.DeviceName] = surface;
         }
@@ -470,12 +532,98 @@ public sealed class WallpaperEngine : IDisposable
     {
         foreach (KeyValuePair<string, WallpaperSurface> pair in _surfaces)
         {
+            pair.Value.DescriptionChanged -= Surface_DescriptionChanged;
             pair.Value.Dispose();
         }
 
         _surfaces.Clear();
         _pauseReasons.Clear();
         _attachFailures.Clear();
+    }
+
+    private void Surface_DescriptionChanged(object? sender, EventArgs e)
+    {
+        // A surface learned something new (media opened, media failed, slide advanced): show it immediately
+        // instead of waiting for the next pause-state change.
+        RaiseStatusChanged();
+    }
+
+    /// <summary>The resolved desktop host (topology, parent window, z-order anchor).</summary>
+    public DesktopHost Host
+    {
+        get { return _desktopWindowService.Host; }
+    }
+
+    /// <summary>Switches every surface to a solid colour without touching the saved settings (visibility test).</summary>
+    public void ApplyTestColour(string colorHex)
+    {
+        WallpaperSource testSource = new WallpaperSource();
+        testSource.Kind = WallpaperKind.SolidColor;
+        testSource.BackgroundColor = colorHex;
+
+        foreach (KeyValuePair<string, WallpaperSurface> pair in _surfaces)
+        {
+            pair.Value.ApplySource(testSource);
+        }
+
+        ApplyPlaybackState(_lastDecision);
+    }
+
+    /// <summary>Puts the configured wallpapers back after a visibility test.</summary>
+    public void RestoreConfiguredSources()
+    {
+        ApplyConfiguredSources();
+        ApplyPlaybackState(ReevaluateNow());
+        RaiseStatusChanged();
+    }
+
+    /// <summary>Everything the diagnostics window shows, in one string.</summary>
+    public string BuildDiagnosticsReport()
+    {
+        StringBuilder builder = new StringBuilder();
+        builder.AppendLine("LiveWall diagnostics");
+        builder.AppendLine("engine running: " + (_isRunning ? "yes" : "no") + (IsManualPause ? " (manually paused)" : string.Empty));
+        builder.AppendLine("desktop host: " + _desktopWindowService.Host.Describe());
+        builder.AppendLine("desktop host alive: " + (_desktopWindowService.IsAlive ? "yes" : "no"));
+        builder.AppendLine("desktop host client rect: " + _desktopWindowService.GetWorkerRectangle());
+        builder.AppendLine("monitors: " + _monitors.Count.ToString(CultureInfo.InvariantCulture));
+        builder.AppendLine("attach failures: " + _attachFailures.Count.ToString(CultureInfo.InvariantCulture));
+        builder.AppendLine(string.Empty);
+
+        for (int index = 0; index < _monitors.Count; index++)
+        {
+            MonitorDescriptor monitor = _monitors[index];
+            builder.AppendLine("monitor " + (monitor.Index + 1).ToString(CultureInfo.InvariantCulture) + " " + monitor.DeviceName + " rect " + monitor.MonitorRectangle);
+
+            WallpaperSurface? surface = null;
+            if (_surfaces.ContainsKey(monitor.DeviceName))
+            {
+                surface = _surfaces[monitor.DeviceName];
+            }
+
+            if (surface == null)
+            {
+                string? failure;
+                if (_attachFailures.TryGetValue(monitor.DeviceName, out failure) && failure != null)
+                {
+                    builder.AppendLine("  not attached: " + failure);
+                }
+                else
+                {
+                    builder.AppendLine("  not attached: no surface yet");
+                }
+            }
+            else
+            {
+                builder.AppendLine("  " + surface.DiagnosticLine());
+            }
+
+            builder.AppendLine("  status: " + GetMonitorStatus(monitor.DeviceName));
+            builder.AppendLine("  screen shows: " + DesktopProbe.Describe(monitor.MonitorRectangle));
+            builder.AppendLine(string.Empty);
+        }
+
+        return builder.ToString();
     }
 
     private string MonitorLabel(string deviceName)

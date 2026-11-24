@@ -13,6 +13,16 @@ internal static class NativeMethods
     /// <summary>SetWindowPos special handle: put the window at the bottom of its parent's z-order.</summary>
     internal const int HWND_BOTTOM = 1;
 
+    internal const int WS_EX_LAYERED = 0x00080000;
+    internal const int WS_EX_NOREDIRECTIONBITMAP = 0x00200000;
+
+    internal const uint LWA_ALPHA = 0x00000002;
+
+    internal const int SW_HIDE = 0;
+    internal const int SW_SHOWNOACTIVATE = 4;
+
+    internal const uint SWP_NOSIZE = 0x0001;
+    internal const uint SWP_NOMOVE = 0x0002;
     internal const uint SWP_NOZORDER = 0x0004;
     internal const uint SWP_NOACTIVATE = 0x0010;
     internal const uint SWP_FRAMECHANGED = 0x0020;
@@ -65,6 +75,18 @@ internal static class NativeMethods
     [DllImport("user32.dll", SetLastError = true)]
     internal static extern bool SetWindowPos(IntPtr windowHandle, IntPtr insertAfter, int x, int y, int width, int height, uint flags);
 
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern bool SetLayeredWindowAttributes(IntPtr windowHandle, uint colorKey, byte alpha, uint flags);
+
+    [DllImport("user32.dll")]
+    internal static extern bool ShowWindow(IntPtr windowHandle, int command);
+
+    [DllImport("user32.dll")]
+    internal static extern bool ClientToScreen(IntPtr windowHandle, ref NativePoint point);
+
+    [DllImport("user32.dll")]
+    internal static extern bool GetClientRect(IntPtr windowHandle, out RECT rectangle);
+
     [DllImport("user32.dll")]
     internal static extern bool GetWindowRect(IntPtr windowHandle, out RECT rectangle);
 
@@ -103,4 +125,11 @@ internal static class NativeMethods
 
     [DllImport("shell32.dll")]
     internal static extern int SHQueryUserNotificationState(out int state);
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct NativePoint
+    {
+        public int X;
+        public int Y;
+    }
 }
