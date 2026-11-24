@@ -402,6 +402,11 @@ public sealed class WallpaperSurface : IWallpaperSurface
                 StartVideo(config);
                 break;
 
+            case WallpaperKind.VideoFolder:
+                // The WPF renderer has no video playlist; say so instead of drawing something misleading.
+                ActiveDescription = "video folder (needs the DirectComposition renderer)";
+                break;
+
             default:
                 ActiveDescription = "solid colour " + config.BackgroundColor;
                 break;
@@ -470,6 +475,26 @@ public sealed class WallpaperSurface : IWallpaperSurface
 
         ShowImage(image);
         ActiveDescription = "image " + DescribeFileName(filePath);
+    }
+
+    /// <summary>
+    /// Shows the next slide of a folder source. The WPF renderer has no video playlist, so a video folder
+    /// simply has nothing to skip there and the call is ignored.
+    /// </summary>
+    public void SkipToNext()
+    {
+        if (_disposed || _slideshowFiles.Count == 0)
+        {
+            return;
+        }
+
+        ShowCurrentSlide();
+        RaiseDescriptionChanged();
+
+        if (_slideshowTimer.IsEnabled)
+        {
+            StartSlideshowTimer();
+        }
     }
 
     private void StartSlideshow(WallpaperSource config)

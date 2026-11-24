@@ -15,7 +15,24 @@ public static class SlideshowPlaylist
         ".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tif", ".tiff", ".webp"
     };
 
+    private static readonly string[] SupportedVideoExtensions = new string[]
+    {
+        ".mp4", ".m4v", ".mov", ".wmv", ".avi", ".mkv"
+    };
+
+    /// <summary>Image files in the source's folder, honouring its subfolder option, in name order.</summary>
     public static List<string> Collect(WallpaperSource source)
+    {
+        return Collect(source, SupportedExtensions);
+    }
+
+    /// <summary>Video files in the source's folder, honouring its subfolder option, in name order.</summary>
+    public static List<string> CollectVideos(WallpaperSource source)
+    {
+        return Collect(source, SupportedVideoExtensions);
+    }
+
+    private static List<string> Collect(WallpaperSource source, string[] extensions)
     {
         List<string> files = new List<string>();
         try
@@ -29,9 +46,9 @@ public static class SlideshowPlaylist
             foreach (string path in Directory.EnumerateFiles(source.FolderPath, "*", searchOption))
             {
                 string extension = Path.GetExtension(path);
-                for (int index = 0; index < SupportedExtensions.Length; index++)
+                for (int index = 0; index < extensions.Length; index++)
                 {
-                    if (string.Equals(extension, SupportedExtensions[index], StringComparison.OrdinalIgnoreCase))
+                    if (string.Equals(extension, extensions[index], StringComparison.OrdinalIgnoreCase))
                     {
                         files.Add(path);
                         break;
@@ -41,7 +58,7 @@ public static class SlideshowPlaylist
         }
         catch (Exception exception)
         {
-            AppLog.WriteException("slideshow folder scan failed: " + source.FolderPath, exception);
+            AppLog.WriteException("folder scan failed: " + source.FolderPath, exception);
         }
 
         files.Sort(StringComparer.OrdinalIgnoreCase);

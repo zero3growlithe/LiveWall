@@ -67,7 +67,7 @@ public partial class MainWindow : Window
             StartMinimizedCheckBox.IsChecked = _settings.StartMinimized;
             StartWithWindowsCheckBox.IsChecked = StartupService.IsRegistered();
             RendererComboBox.SelectedIndex = (int)_settings.Renderer;
-            WallpaperScaleComboBox.SelectedIndex = (int)_settings.WallpaperScale;
+            SelectComboItemByTag(WallpaperScaleComboBox, _settings.WallpaperScale.ToString());
         }
         finally
         {
@@ -212,10 +212,13 @@ public partial class MainWindow : Window
         {
             SelectComboItemByTag(SourceKindComboBox, source.Kind.ToString());
             SelectComboItemByTag(StretchComboBox, source.Stretch.ToString());
-            PathTextBox.Text = source.Kind == WallpaperKind.Slideshow ? source.FolderPath : source.FilePath;
+            bool folderSource = source.Kind == WallpaperKind.Slideshow || source.Kind == WallpaperKind.VideoFolder;
+            PathTextBox.Text = folderSource ? source.FolderPath : source.FilePath;
             ColorTextBox.Text = source.BackgroundColor;
             SubfoldersCheckBox.IsChecked = source.IncludeSubfolders;
             ShuffleCheckBox.IsChecked = source.Shuffle;
+            VideoSubfoldersCheckBox.IsChecked = source.IncludeSubfolders;
+            SelectComboItemByTag(VideoOrderComboBox, source.VideoOrder.ToString());
             IntervalSlider.Value = source.SlideshowIntervalSeconds;
             MuteCheckBox.IsChecked = source.MuteVideo;
             VolumeSlider.Value = source.VideoVolume;
@@ -241,7 +244,7 @@ public partial class MainWindow : Window
         source.Kind = kind;
         source.Stretch = ParseStretch();
         string path = PathTextBox.Text == null ? string.Empty : PathTextBox.Text.Trim();
-        if (kind == WallpaperKind.Slideshow)
+        if (kind == WallpaperKind.Slideshow || kind == WallpaperKind.VideoFolder)
         {
             source.FolderPath = path;
         }
@@ -250,8 +253,12 @@ public partial class MainWindow : Window
             source.FilePath = path;
         }
 
+        source.VideoOrder = ParseVideoOrder();
+
         source.BackgroundColor = string.IsNullOrWhiteSpace(ColorTextBox.Text) ? "#000000" : ColorTextBox.Text.Trim();
-        source.IncludeSubfolders = SubfoldersCheckBox.IsChecked == true;
+        source.IncludeSubfolders = kind == WallpaperKind.VideoFolder
+            ? VideoSubfoldersCheckBox.IsChecked == true
+            : SubfoldersCheckBox.IsChecked == true;
         source.Shuffle = ShuffleCheckBox.IsChecked == true;
         source.SlideshowIntervalSeconds = (int)Math.Round(IntervalSlider.Value);
         source.MuteVideo = MuteCheckBox.IsChecked == true;
@@ -261,9 +268,14 @@ public partial class MainWindow : Window
     private void UpdateEditorVisibility()
     {
         WallpaperKind kind = ParseKind();
+        bool folderKind = kind == WallpaperKind.Slideshow || kind == WallpaperKind.VideoFolder;
+        bool videoKind = kind == WallpaperKind.Video || kind == WallpaperKind.VideoFolder;
+
         SlideshowPanel.Visibility = kind == WallpaperKind.Slideshow ? Visibility.Visible : Visibility.Collapsed;
-        VideoPanel.Visibility = kind == WallpaperKind.Video ? Visibility.Visible : Visibility.Collapsed;
+        VideoPanel.Visibility = videoKind ? Visibility.Visible : Visibility.Collapsed;
+        VideoFolderPanel.Visibility = kind == WallpaperKind.VideoFolder ? Visibility.Visible : Visibility.Collapsed;
         ColorPanel.Visibility = kind == WallpaperKind.SolidColor ? Visibility.Visible : Visibility.Collapsed;
+        NextItemButton.Visibility = folderKind ? Visibility.Visible : Visibility.Collapsed;
         PathTextBox.IsEnabled = kind != WallpaperKind.SolidColor;
 
         switch (kind)
@@ -276,6 +288,9 @@ public partial class MainWindow : Window
                 break;
             case WallpaperKind.Video:
                 PathLabelTextBlock.Text = "Video file";
+                break;
+            case WallpaperKind.VideoFolder:
+                PathLabelTextBlock.Text = "Video folder";
                 break;
             default:
                 PathLabelTextBlock.Text = "Not used for a solid colour";
@@ -445,6 +460,7 @@ public partial class MainWindow : Window
 
         LoadEditor();
         _engine.ApplySettings(_settings);
+        ProfileNameTextBox.Text = name;
         SetTextIfChanged(StatusTextBlock, "Profile loaded: " + name);
     }
 
@@ -518,10 +534,12 @@ public partial class MainWindow : Window
     private void Browse_Click(object sender, RoutedEventArgs e)
     {
         WallpaperKind kind = ParseKind();
-        if (kind == WallpaperKind.Slideshow)
+        if (kind == WallpaperKind.Slideshow || kind == WallpaperKind.VideoFolder)
         {
             OpenFolderDialog folderDialog = new OpenFolderDialog();
-            folderDialog.Title = "Choose a slideshow folder";
+            folderDialog.Title = kind == WallpaperKind.VideoFolder
+                ? "Choose a folder of videos"
+                : "Choose a slideshow folder";
             if (!string.IsNullOrWhiteSpace(PathTextBox.Text) && Directory.Exists(PathTextBox.Text))
             {
                 folderDialog.InitialDirectory = PathTextBox.Text;
@@ -561,6 +579,48 @@ public partial class MainWindow : Window
     /// Saves the editor and pushes it to the engine right away. This is what makes changing the source from a
     /// video to an image unload the video instead of leaving it decoding behind the desktop.
     /// </summary>
+    /// <summary>
+    /// Shared handler for the checkboxes and the video-order list: every folder option takes effect at once,
+    /// without pressing Apply.
+    /// </summary>
+    private void EditorOption_Changed(object sender, RoutedEventArgs e)
+    {
+        ApplyEditorChanges();
+    }
+
+    /// <summary>
+    /// Asks every wallpaper surface to advance: the next slide of a slideshow, the next clip of a video folder.
+    /// </summary>
+    private void NextItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_engine.IsRunning)
+        {
+            SetTextIfChanged(StatusTextBlock, "Start the wallpaper first, then the next button can switch it.");
+            return;
+        }
+
+        _engine.SkipToNext();
+        UpdateStatuses();
+    }
+
+    /// <summary>
+    /// Picking a profile in the list fills the name box, so Save overwrites that profile instead of asking for
+    /// a name again.
+    /// </summary>
+    private void ProfileComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_suppressEditorEvents)
+        {
+            return;
+        }
+
+        string? name = ProfileComboBox.SelectedItem as string;
+        if (!string.IsNullOrEmpty(name))
+        {
+            ProfileNameTextBox.Text = name;
+        }
+    }
+
     private void ApplyEditorChanges()
     {
         if (_suppressEditorEvents)
@@ -603,15 +663,28 @@ public partial class MainWindow : Window
 
     private WallpaperScaleMode ReadScaleMode()
     {
-        switch (WallpaperScaleComboBox.SelectedIndex)
+        ComboBoxItem? item = WallpaperScaleComboBox.SelectedItem as ComboBoxItem;
+        string? tag = item == null ? null : item.Tag as string;
+        WallpaperScaleMode mode;
+        if (tag != null && Enum.TryParse(tag, true, out mode))
         {
-            case 1:
-                return WallpaperScaleMode.Pixels;
-            case 2:
-                return WallpaperScaleMode.AssumeOneHundredFiftyPercent;
-            default:
-                return WallpaperScaleMode.MatchDisplayScaling;
+            return mode;
         }
+
+        return WallpaperScaleMode.Pixels;
+    }
+
+    private VideoPlaybackOrder ParseVideoOrder()
+    {
+        ComboBoxItem? item = VideoOrderComboBox.SelectedItem as ComboBoxItem;
+        string? tag = item == null ? null : item.Tag as string;
+        VideoPlaybackOrder order;
+        if (tag != null && Enum.TryParse(tag, true, out order))
+        {
+            return order;
+        }
+
+        return VideoPlaybackOrder.Sequential;
     }
 
     private void WallpaperScaleComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -786,7 +859,7 @@ public partial class MainWindow : Window
         }
 
         bool matchesKind;
-        if (kind == WallpaperKind.Slideshow)
+        if (kind == WallpaperKind.Slideshow || kind == WallpaperKind.VideoFolder)
         {
             matchesKind = Directory.Exists(path);
         }

@@ -10,6 +10,9 @@ lets every monitor have its own wallpaper, and automatically pauses playback whi
   - a still image,
   - a slideshow folder (optional subfolders, shuffle, 5–600 s interval, cross-fade),
   - a looping video (muted by default, volume configurable),
+  - a **video folder** played as a playlist — sequential (name order, then back to the first),
+    random sequence (every clip once, reshuffled on each pass) or random loop (one random clip, looped
+    from the start of the session); optional subfolders, and muted volume settings that apply to all of them,
   - or a solid colour, picked with the same colour dialog SubtitleForge uses (hue/saturation square,
     alpha ramp, presets, hex field — used as the fallback while an image/video is loading or missing).
 - **Multi-monitor**: either one wallpaper for every monitor, or a separate wallpaper per monitor
@@ -24,7 +27,10 @@ lets every monitor have its own wallpaper, and automatically pauses playback whi
   *inside* a decoded video frame is cropped off before drawing: the band is part of the frame data, so no
   scaling mode can hide it. Whatever a mode leaves uncovered is painted with the wallpaper's background colour,
   so the previous Windows wallpaper never shows through around a centred or fitted picture.
-- **Profiles**: save the current setup — every monitor at once — under a name and load it later
+- **Skip by hand**: a `Skip to the next picture / video` button in the settings window steps a slideshow or a
+  video folder forward immediately (a single random-loop folder draws a new random clip).
+- **Profiles**: shown at the top of the window; save the current setup — every monitor at once — under a name and
+  load it later (picking a profile in the list copies its name into the name box, so `Save` overwrites it)
   (`%LocalAppData%\LiveWall\profiles\<name>.json`). The renderer choice and the window placement are not part
   of a profile: they describe the app, not the decor.
 - **Tray icon** with `Settings…`, `Pause all` / `Resume all` and `Exit`; closing the window hides to tray.
@@ -43,6 +49,8 @@ lets every monitor have its own wallpaper, and automatically pauses playback whi
 | `Pause all` / `Resume all` | Manual override, independent of the automatic detection. |
 | `Hide to tray` | Keeps the wallpaper running, removes the window. |
 | `Same wallpaper on every monitor` | Shared configuration; uncheck to edit each monitor separately. |
+| `Skip to the next picture / video` | Steps a slideshow or video folder forward at once. |
+| `Wallpaper scale` | `pixels as DIPs (no DPI adjustment)` is the default and the setting that draws 1:1 on a 100 % display. |
 
 ## How it works
 

@@ -34,5 +34,8 @@ public interface IWallpaperSurface : IDisposable
 
     void SetPaused(bool paused);
 
+    /// <summary>Moves to the next image or video of a folder source; does nothing for a single file.</summary>
+    void SkipToNext();
+
     string DiagnosticLine();
 }

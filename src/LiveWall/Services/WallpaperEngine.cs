@@ -82,6 +82,20 @@ public sealed class WallpaperEngine : IDisposable
         get { return _monitors; }
     }
 
+    /// <summary>
+    /// Asks every surface to move to the next image or video of its folder source. Used by the settings
+    /// window's Next button so a slideshow or video folder can be stepped through by hand.
+    /// </summary>
+    public void SkipToNext()
+    {
+        foreach (KeyValuePair<string, IWallpaperSurface> pair in _surfaces)
+        {
+            pair.Value.SkipToNext();
+        }
+
+        RaiseStatusChanged();
+    }
+
     public void RefreshMonitors()
     {
         _monitors = MonitorService.GetMonitors();

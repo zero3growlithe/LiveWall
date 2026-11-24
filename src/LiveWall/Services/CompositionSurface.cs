@@ -101,6 +101,7 @@ public sealed class CompositionSurface : IWallpaperSurface
     private bool _firstVideoFrameDumped;
     private bool _contentBoxValid;
     private int _pendingBackgroundColour = -1;
+    private VideoQueue? _videoQueue;
     private int _appliedBackgroundColour = -1;
     private ContentBox _contentBox;
     private long _framesPresented;
@@ -304,10 +305,15 @@ public sealed class CompositionSurface : IWallpaperSurface
         Color background = ColorParser.ParseHexColor(_source.BackgroundColor, Colors.Black);
         _pendingBackgroundColour = (background.R << 16) | (background.G << 8) | background.B;
 
+        _videoQueue = null;
+
         switch (_source.Kind)
         {
             case WallpaperKind.Video:
                 PushVideoSource();
+                break;
+            case WallpaperKind.VideoFolder:
+                PushVideoFolderSource();
                 break;
             case WallpaperKind.Image:
                 ShowImageFile(_source.FilePath, stretch);
@@ -319,6 +325,47 @@ public sealed class CompositionSurface : IWallpaperSurface
                 ShowSolidColour(_source.BackgroundColor, stretch);
                 break;
         }
+    }
+
+    /// <summary>
+    /// Moves to the next item of a folder source: the next slide for a slideshow, the next clip for a video
+    /// folder. A single image or a single video has no "next", so the call does nothing.
+    /// </summary>
+    public void SkipToNext()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        if (_slideshowTimer != null && _playlistFiles.Count > 0)
+        {
+            _playlistIndex = (_playlistIndex + 1) % _playlistFiles.Count;
+            ShowCurrentSlide();
+            _slideshowTimer.Stop();
+            _slideshowTimer.Start();
+            return;
+        }
+
+        if (_videoQueue == null)
+        {
+            return;
+        }
+
+        string? nextFile = _videoQueue.AdvanceOnSkip();
+        if (string.IsNullOrEmpty(nextFile))
+        {
+            return;
+        }
+
+        string description = DescribeQueuedVideo(_videoQueue, nextFile);
+        lock (_sync)
+        {
+            _pendingVideo = new VideoCommand(nextFile, _source.Stretch, description);
+            Monitor.PulseAll(_sync);
+        }
+
+        SetDescription(description + " (opening…)");
     }
 
     public void SetPaused(bool paused)
@@ -398,6 +445,54 @@ public sealed class CompositionSurface : IWallpaperSurface
         }
 
         SetDescription("video " + Path.GetFileName(filePath) + " (opening…)");
+    }
+
+    /// <summary>
+    /// Starts a folder of videos. The queue decides the order, and the same queue keeps handing out the next
+    /// file when one ends, so a folder behaves like a playlist instead of a single looping clip.
+    /// </summary>
+    private void PushVideoFolderSource()
+    {
+        VideoQueue queue = new VideoQueue(_source);
+        _videoQueue = queue;
+
+        string? firstFile = queue.Current;
+        if (string.IsNullOrEmpty(firstFile))
+        {
+            ShowSolidColour(_source.BackgroundColor, _source.Stretch);
+            SetDescription("video folder (no videos found in " + _source.FolderPath + ")");
+            return;
+        }
+
+        lock (_sync)
+        {
+            _pendingFrame = null;
+            _pendingVideo = new VideoCommand(firstFile, _source.Stretch, DescribeQueuedVideo(queue, firstFile));
+            Monitor.PulseAll(_sync);
+        }
+
+        SetDescription(DescribeQueuedVideo(queue, firstFile) + " (opening…)");
+    }
+
+    private static string DescribeQueuedVideo(VideoQueue queue, string filePath)
+    {
+        string name = Path.GetFileName(filePath);
+        if (queue.RepeatsSingleFile)
+        {
+            return "video " + name + " (random pick, looped)";
+        }
+
+        if (queue.Count <= 1)
+        {
+            return "video " + name;
+        }
+
+        return string.Format(
+            CultureInfo.InvariantCulture,
+            "video {0} ({1} of {2})",
+            name,
+            queue.Position,
+            queue.Count);
     }
 
     private void ShowImageFile(string filePath, WallpaperStretch stretch)
@@ -664,8 +759,10 @@ public sealed class CompositionSurface : IWallpaperSurface
                             presenter.InvalidateTransform();
                             SetDescription(string.Format(
                                 CultureInfo.InvariantCulture,
-                                "video {0} ({1}x{2}, muted, looping)",
-                                Path.GetFileName(videoCommand.FilePath),
+                                "{0} — {1}x{2}, muted",
+                                string.IsNullOrEmpty(videoCommand.Description)
+                                    ? "video " + Path.GetFileName(videoCommand.FilePath)
+                                    : videoCommand.Description,
                                 candidate.Width,
                                 candidate.Height));
                         }
@@ -709,9 +806,25 @@ public sealed class CompositionSurface : IWallpaperSurface
                     {
                         if (sampleTime < 0)
                         {
-                            // End of stream: loop back to the first frame.
+                            // End of stream. A folder queue decides what plays next; a single file (and the
+                            // single-random-loop mode, which deliberately stays on one file) rewinds instead.
                             firstSampleTime = -1;
                             playbackStartTimestamp = 0;
+                            string? nextFile = _videoQueue == null ? null : _videoQueue.Advance();
+                            if (!string.IsNullOrEmpty(nextFile))
+                            {
+                                lock (_sync)
+                                {
+                                    _pendingVideo = new VideoCommand(
+                                        nextFile,
+                                        stretch,
+                                        DescribeQueuedVideo(_videoQueue, nextFile));
+                                    Monitor.PulseAll(_sync);
+                                }
+
+                                continue;
+                            }
+
                             if (!video.Rewind())
                             {
                                 ReleaseVideo(ref video);

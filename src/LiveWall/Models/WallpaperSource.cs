@@ -22,6 +22,9 @@ public sealed class WallpaperSource
 
     public bool Shuffle { get; set; } = true;
 
+    /// <summary>Play order for a <see cref="WallpaperKind.VideoFolder"/> source.</summary>
+    public VideoPlaybackOrder VideoOrder { get; set; } = VideoPlaybackOrder.Sequential;
+
     public WallpaperStretch Stretch { get; set; } = WallpaperStretch.Fill;
 
     public string BackgroundColor { get; set; } = "#000000";
@@ -49,6 +52,12 @@ public sealed class WallpaperSource
                     SlideshowIntervalSeconds);
             case WallpaperKind.Video:
                 return string.IsNullOrWhiteSpace(FilePath) ? "video (no file selected)" : "video " + FilePath;
+            case WallpaperKind.VideoFolder:
+                return string.Format(
+                    CultureInfo.InvariantCulture,
+                    "video folder {0} ({1})",
+                    string.IsNullOrWhiteSpace(FolderPath) ? "(no folder selected)" : FolderPath,
+                    VideoOrder);
             default:
                 return "solid colour " + BackgroundColor;
         }
