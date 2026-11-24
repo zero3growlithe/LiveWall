@@ -25,7 +25,7 @@ namespace LiveWall.Services;
 /// of a <see cref="MediaElement"/>: MediaElement expects to own the layout of a normal window, while a brush
 /// renders wherever it is used — which is what a child window of the shell needs.
 /// </summary>
-public sealed class WallpaperSurface : IDisposable
+public sealed class WallpaperSurface : IWallpaperSurface
 {
     private const int PopupWindowStyle = unchecked((int)0x80000000);
     private const int VisibleWindowStyle = 0x10000000;

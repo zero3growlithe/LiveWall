@@ -126,6 +126,27 @@ internal static class NativeMethods
     [DllImport("shell32.dll")]
     internal static extern int SHQueryUserNotificationState(out int state);
 
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    internal static extern IntPtr CreateWindowEx(
+        uint extendedStyle,
+        string className,
+        string windowName,
+        uint style,
+        int x,
+        int y,
+        int width,
+        int height,
+        IntPtr parentWindow,
+        IntPtr menuHandle,
+        IntPtr instanceHandle,
+        IntPtr parameter);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern bool DestroyWindow(IntPtr windowHandle);
+
+    [DllImport("user32.dll")]
+    internal static extern int GetDpiForWindow(IntPtr windowHandle);
+
     [StructLayout(LayoutKind.Sequential)]
     internal struct NativePoint
     {

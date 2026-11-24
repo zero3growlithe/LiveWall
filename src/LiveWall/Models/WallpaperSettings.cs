@@ -29,9 +29,14 @@ public sealed class WallpaperSettings
     public bool StartWithWindows { get; set; }
 
     /// <summary>
-    /// Which WPF render mode the wallpaper surfaces use. Software rendering goes through GDI, which is what
-    /// the "raised desktop" (Windows 11 24H2+, build 26100+) composes for child windows on the builds where
-    /// the hardware path ends up invisible.
+    /// Which drawing stack paints the wallpaper (see <see cref="RendererPreference"/>). DirectComposition is
+    /// the default because it is the only path the shell composes on Windows 11 24H2+ (build 26100+).
+    /// </summary>
+    public RendererPreference Renderer { get; set; } = RendererPreference.Composition;
+
+    /// <summary>
+    /// Which WPF render mode the WPF fallback surfaces use. Only consulted when
+    /// <see cref="Renderer"/> is one of the WPF modes.
     /// </summary>
     public RenderModePreference RenderMode { get; set; } = RenderModePreference.Hardware;
 

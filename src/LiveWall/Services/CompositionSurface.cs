@@ -1,0 +1,776 @@
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Globalization;
+using System.IO;
+using System.Threading;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
+using System.Windows.Threading;
+using LiveWall.Models;
+
+namespace LiveWall.Services;
+
+/// <summary>
+/// A wallpaper surface that paints through DirectComposition instead of WPF.
+/// <para>
+/// The window is a plain child of the desktop host (a "Static" window, no WPF content at all) and the pixels
+/// arrive through a D3D11 flip-model swapchain bound to a DirectComposition visual. On Windows 11 24H2+ this
+/// is the only path the shell composes, so it is the default renderer.
+/// </para>
+/// <para>
+/// Two threads are involved and the split is deliberate: the window, the slideshow timer and image decoding
+/// live on the UI thread, while the D3D device, the swapchain and the video decoder live on a dedicated
+/// render thread (a D3D11 immediate context is single threaded, and decoding must never block the UI).
+/// </para>
+/// </summary>
+public sealed class CompositionSurface : IWallpaperSurface
+{
+    private const int PixelsPerDipBase = 96;
+    private const int DefaultDpi = 96;
+    private const int RenderThreadJoinMilliseconds = 2500;
+
+    private sealed class FrameCommand
+    {
+        public FrameCommand(byte[] pixels, int width, int height, WallpaperStretch stretch, string description)
+        {
+            Pixels = pixels;
+            Width = width;
+            Height = height;
+            Stretch = stretch;
+            Description = description;
+        }
+
+        public byte[] Pixels { get; private set; }
+
+        public int Width { get; private set; }
+
+        public int Height { get; private set; }
+
+        public WallpaperStretch Stretch { get; private set; }
+
+        public string Description { get; private set; }
+    }
+
+    private sealed class VideoCommand
+    {
+        public VideoCommand(string filePath, WallpaperStretch stretch, string description)
+        {
+            FilePath = filePath;
+            Stretch = stretch;
+            Description = description;
+        }
+
+        public string FilePath { get; private set; }
+
+        public WallpaperStretch Stretch { get; private set; }
+
+        public string Description { get; private set; }
+    }
+
+    private readonly string _deviceName;
+    private readonly Dispatcher _dispatcher;
+    private readonly object _sync = new object();
+    private readonly Random _shuffleRandom = new Random();
+
+    private List<string> _playlistFiles = new List<string>();
+    private int _playlistIndex;
+    private DispatcherTimer? _slideshowTimer;
+    private WallpaperSource _source = new WallpaperSource();
+
+    private IntPtr _windowHandle;
+    private Thread? _renderThread;
+    private bool _attached;
+    private bool _disposed;
+    private bool _paused;
+    private bool _isVideoOpen;
+    private bool _stopRenderThread;
+    private FrameCommand? _pendingFrame;
+    private VideoCommand? _pendingVideo;
+    private WallpaperStretch _stretch = WallpaperStretch.Fill;
+    private string _description = "nothing";
+    private string _attachFailure = string.Empty;
+    private string _hostDescription = "not attached";
+    private string _rendererDescription = "not created";
+    private int _windowWidth;
+    private int _windowHeight;
+    private long _framesPresented;
+    private volatile bool _renderThreadAlive;
+
+    public CompositionSurface(string deviceName)
+    {
+        _deviceName = deviceName;
+        _dispatcher = Dispatcher.CurrentDispatcher;
+    }
+
+    public event EventHandler? DescriptionChanged;
+
+    public string DeviceName
+    {
+        get { return _deviceName; }
+    }
+
+    public string ActiveDescription
+    {
+        get { return _description; }
+    }
+
+    public string AttachFailureReason
+    {
+        get { return _attachFailure; }
+    }
+
+    public string HostDescription
+    {
+        get { return _hostDescription; }
+    }
+
+    public string CreationMode
+    {
+        get { return "direct composition"; }
+    }
+
+    public bool IsAttached
+    {
+        get { return _attached; }
+    }
+
+    public bool IsPaused
+    {
+        get { return _paused; }
+    }
+
+    public bool IsVideoOpen
+    {
+        get { return _isVideoOpen; }
+    }
+
+    /// <summary>
+    /// Creates the wallpaper window straight into the desktop host and starts the render thread. The creation
+    /// order is irrelevant here (there is no WPF content to reparent), so the "child at creation" and
+    /// "reparented popup" fallbacks are the same thing for this renderer.
+    /// </summary>
+    public bool Attach(DesktopHost host, RECT monitorRectangle, RECT hostRectangle, SurfaceCreationMode creationMode)
+    {
+        if (_disposed)
+        {
+            return false;
+        }
+
+        if (_attached && _windowHandle != IntPtr.Zero)
+        {
+            return true;
+        }
+
+        try
+        {
+            if (host.IsEmpty || host.ParentWindow == IntPtr.Zero)
+            {
+                _attachFailure = "the desktop host window was not resolved";
+                return false;
+            }
+
+            _windowWidth = monitorRectangle.Width;
+            _windowHeight = monitorRectangle.Height;
+            int childX = monitorRectangle.Left - hostRectangle.Left;
+            int childY = monitorRectangle.Top - hostRectangle.Top;
+
+            _windowHandle = CompositionWindowFactory.Create(host.ParentWindow, childX, childY, _windowWidth, _windowHeight);
+            if (_windowHandle == IntPtr.Zero)
+            {
+                _attachFailure = "CreateWindowEx failed with Win32 error "
+                    + System.Runtime.InteropServices.Marshal.GetLastWin32Error().ToString(CultureInfo.InvariantCulture);
+                return false;
+            }
+
+            // Sit directly below the icon host so the desktop icons stay on top of the wallpaper.
+            NativeMethods.SetWindowPos(
+                _windowHandle,
+                host.InsertAfterWindow,
+                0,
+                0,
+                0,
+                0,
+                NativeMethods.SWP_NOMOVE | NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOACTIVATE);
+            NativeMethods.ShowWindow(_windowHandle, NativeMethods.SW_SHOWNOACTIVATE);
+
+            _hostDescription = host.Describe();
+            int dpi = NativeMethods.GetDpiForWindow(_windowHandle);
+            if (dpi <= 0)
+            {
+                dpi = DefaultDpi;
+            }
+
+            double devicePixelsPerDip = (double)PixelsPerDipBase / dpi;
+
+            AppLog.Write(string.Format(
+                CultureInfo.InvariantCulture,
+                "composition surface attached for {0} at {1},{2},{3}x{4} under host 0x{5:X} (window 0x{6:X}, dpi {7})",
+                _deviceName,
+                monitorRectangle.Left,
+                monitorRectangle.Top,
+                _windowWidth,
+                _windowHeight,
+                host.ParentWindow.ToInt64(),
+                _windowHandle.ToInt64(),
+                dpi));
+
+            int width = _windowWidth;
+            int height = _windowHeight;
+            _renderThread = new Thread(() => RenderLoop(width, height, devicePixelsPerDip));
+            _renderThread.IsBackground = true;
+            _renderThread.Name = "LiveWall composition " + _deviceName;
+            _renderThread.SetApartmentState(ApartmentState.MTA);
+            _renderThread.Start();
+            _renderThreadAlive = true;
+            _attached = true;
+            _attachFailure = string.Empty;
+            return true;
+        }
+        catch (Exception exception)
+        {
+            _attachFailure = exception.GetType().Name + ": " + exception.Message;
+            AppLog.WriteException("attaching the composition surface failed for " + _deviceName, exception);
+            DisposeWindow();
+            return false;
+        }
+    }
+
+    public void ApplySource(WallpaperSource config)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _source = config == null ? new WallpaperSource() : config;
+        StopSlideshow();
+
+        WallpaperStretch stretch = _source.Stretch;
+        lock (_sync)
+        {
+            _stretch = stretch;
+        }
+
+        switch (_source.Kind)
+        {
+            case WallpaperKind.Video:
+                PushVideoSource();
+                break;
+            case WallpaperKind.Image:
+                ShowImageFile(_source.FilePath, stretch);
+                break;
+            case WallpaperKind.Slideshow:
+                StartSlideshow();
+                break;
+            default:
+                ShowSolidColour(_source.BackgroundColor, stretch);
+                break;
+        }
+    }
+
+    public void SetPaused(bool paused)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        if (_paused == paused)
+        {
+            return;
+        }
+
+        _paused = paused;
+        lock (_sync)
+        {
+            Monitor.PulseAll(_sync);
+        }
+    }
+
+    public string DiagnosticLine()
+    {
+        string windowHandle = _windowHandle == IntPtr.Zero ? "-" : "0x" + _windowHandle.ToInt64().ToString("X", CultureInfo.InvariantCulture);
+        return string.Format(
+            CultureInfo.InvariantCulture,
+            "{0} | attached={1} | window={2} | size={3}x{4} | paused={5} | videoOpen={6} | renderer={7} | framesPresented={8} | host={9} | what={10}",
+            _deviceName,
+            _attached ? "yes" : "no",
+            windowHandle,
+            _windowWidth,
+            _windowHeight,
+            _paused ? "yes" : "no",
+            _isVideoOpen ? "yes" : "no",
+            _rendererDescription,
+            _framesPresented,
+            _hostDescription,
+            _description);
+    }
+
+    // ── Source handling (UI thread) ───────────────────────────────────────────────────────────────────────
+
+    private void PushVideoSource()
+    {
+        string filePath = _source.FilePath;
+        if (string.IsNullOrWhiteSpace(filePath))
+        {
+            ShowSolidColour(_source.BackgroundColor, _source.Stretch);
+            SetDescription("video (no file selected)");
+            return;
+        }
+
+        lock (_sync)
+        {
+            _pendingFrame = null;
+            _pendingVideo = new VideoCommand(filePath, _source.Stretch, "video " + Path.GetFileName(filePath));
+            Monitor.PulseAll(_sync);
+        }
+
+        SetDescription("video " + Path.GetFileName(filePath) + " (opening…)");
+    }
+
+    private void ShowImageFile(string filePath, WallpaperStretch stretch)
+    {
+        if (string.IsNullOrWhiteSpace(filePath))
+        {
+            ShowSolidColour(_source.BackgroundColor, stretch);
+            SetDescription("image (no file selected)");
+            return;
+        }
+
+        byte[]? pixels;
+        int width;
+        int height;
+        string failure;
+        if (TryLoadImagePixels(filePath, out pixels, out width, out height, out failure) && pixels != null)
+        {
+            PushFrame(pixels, width, height, stretch, "image " + Path.GetFileName(filePath));
+            return;
+        }
+
+        AppLog.Write("could not decode the wallpaper image " + filePath + ": " + failure);
+        ShowSolidColour(_source.BackgroundColor, stretch);
+        SetDescription("image " + Path.GetFileName(filePath) + " could not be read: " + failure);
+    }
+
+    private void ShowSolidColour(string colorHex, WallpaperStretch stretch)
+    {
+        Color color = ColorParser.ParseHexColor(colorHex, Colors.Black);
+        const int width = 8;
+        const int height = 8;
+        byte[] pixels = new byte[width * height * 4];
+        for (int index = 0; index < pixels.Length; index += 4)
+        {
+            pixels[index] = color.B;
+            pixels[index + 1] = color.G;
+            pixels[index + 2] = color.R;
+            pixels[index + 3] = 255;
+        }
+
+        PushFrame(pixels, width, height, stretch, "solid colour " + colorHex);
+    }
+
+    private void PushFrame(byte[] pixels, int width, int height, WallpaperStretch stretch, string description)
+    {
+        lock (_sync)
+        {
+            _pendingVideo = null;
+            _pendingFrame = new FrameCommand(pixels, width, height, stretch, description);
+            Monitor.PulseAll(_sync);
+        }
+
+        SetDescription(description);
+    }
+
+    private void StartSlideshow()
+    {
+        _playlistFiles = SlideshowPlaylist.Collect(_source);
+        if (_playlistFiles.Count == 0)
+        {
+            ShowSolidColour(_source.BackgroundColor, _source.Stretch);
+            SetDescription("slideshow (no images found in " + _source.FolderPath + ")");
+            return;
+        }
+
+        if (_source.Shuffle)
+        {
+            SlideshowPlaylist.Shuffle(_playlistFiles, _shuffleRandom);
+        }
+
+        _playlistIndex = 0;
+        int intervalSeconds = _source.SlideshowIntervalSeconds;
+        if (intervalSeconds < 1)
+        {
+            intervalSeconds = 1;
+        }
+
+        _slideshowTimer = new DispatcherTimer(DispatcherPriority.Background, _dispatcher);
+        _slideshowTimer.Interval = TimeSpan.FromSeconds(intervalSeconds);
+        _slideshowTimer.Tick += SlideshowTimer_Tick;
+        _slideshowTimer.Start();
+        ShowCurrentSlide();
+    }
+
+    private void StopSlideshow()
+    {
+        if (_slideshowTimer != null)
+        {
+            _slideshowTimer.Stop();
+            _slideshowTimer.Tick -= SlideshowTimer_Tick;
+            _slideshowTimer = null;
+        }
+    }
+
+    private void SlideshowTimer_Tick(object? sender, EventArgs e)
+    {
+        if (_disposed || _playlistFiles.Count == 0)
+        {
+            return;
+        }
+
+        _playlistIndex = (_playlistIndex + 1) % _playlistFiles.Count;
+        ShowCurrentSlide();
+    }
+
+    private void ShowCurrentSlide()
+    {
+        if (_playlistFiles.Count == 0)
+        {
+            return;
+        }
+
+        string filePath = _playlistFiles[_playlistIndex];
+        byte[]? pixels;
+        int width;
+        int height;
+        string failure;
+        if (TryLoadImagePixels(filePath, out pixels, out width, out height, out failure) && pixels != null)
+        {
+            string description = string.Format(
+                CultureInfo.InvariantCulture,
+                "slideshow {0} ({1} of {2}, every {3}s)",
+                Path.GetFileName(filePath),
+                _playlistIndex + 1,
+                _playlistFiles.Count,
+                _source.SlideshowIntervalSeconds);
+            PushFrame(pixels, width, height, _source.Stretch, description);
+            return;
+        }
+
+        AppLog.Write("could not decode a slideshow image " + filePath + ": " + failure);
+    }
+
+    private static bool TryLoadImagePixels(string filePath, out byte[]? pixels, out int width, out int height, out string failure)
+    {
+        pixels = null;
+        width = 0;
+        height = 0;
+        failure = string.Empty;
+
+        try
+        {
+            if (!File.Exists(filePath))
+            {
+                failure = "the file does not exist";
+                return false;
+            }
+
+            BitmapImage image = new BitmapImage();
+            image.BeginInit();
+            image.CacheOption = BitmapCacheOption.OnLoad;
+            image.CreateOptions = BitmapCreateOptions.PreservePixelFormat;
+            image.UriSource = new Uri(filePath, UriKind.Absolute);
+            image.EndInit();
+            image.Freeze();
+
+            FormatConvertedBitmap converted = new FormatConvertedBitmap(image, PixelFormats.Bgra32, null, 0);
+            converted.Freeze();
+
+            width = converted.PixelWidth;
+            height = converted.PixelHeight;
+            if (width <= 0 || height <= 0)
+            {
+                failure = "the image has no pixels";
+                return false;
+            }
+
+            int stride = width * 4;
+            byte[] buffer = new byte[stride * height];
+            converted.CopyPixels(buffer, stride, 0);
+            pixels = buffer;
+            return true;
+        }
+        catch (Exception exception)
+        {
+            failure = exception.Message;
+            return false;
+        }
+    }
+
+    private void SetDescription(string description)
+    {
+        if (string.Equals(_description, description, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _description = description;
+        RaiseDescriptionChanged();
+    }
+
+    private void RaiseDescriptionChanged()
+    {
+        if (_dispatcher.CheckAccess())
+        {
+            DescriptionChanged?.Invoke(this, EventArgs.Empty);
+            return;
+        }
+
+        _dispatcher.BeginInvoke(new Action(() => DescriptionChanged?.Invoke(this, EventArgs.Empty)));
+    }
+
+    // ── Render thread ─────────────────────────────────────────────────────────────────────────────────────
+
+    private void RenderLoop(int windowWidth, int windowHeight, double devicePixelsPerDip)
+    {
+        CompositionPresenter? presenter = null;
+        MediaFoundationVideo? video = null;
+        long firstSampleTime = -1;
+        long playbackStartTimestamp = 0;
+
+        try
+        {
+            presenter = new CompositionPresenter();
+            presenter.Initialize(_windowHandle, windowWidth, windowHeight, devicePixelsPerDip);
+            _rendererDescription = presenter.DeviceDescription;
+            AppLog.Write("composition renderer ready for " + _deviceName + ": " + presenter.DeviceDescription);
+
+            while (true)
+            {
+                FrameCommand? frame;
+                VideoCommand? videoCommand;
+                WallpaperStretch stretch;
+                bool paused;
+                bool stop;
+                lock (_sync)
+                {
+                    stop = _stopRenderThread;
+                    frame = _pendingFrame;
+                    videoCommand = _pendingVideo;
+                    _pendingFrame = null;
+                    _pendingVideo = null;
+                    stretch = _stretch;
+                    paused = _paused;
+                }
+
+                if (stop)
+                {
+                    break;
+                }
+
+                if (videoCommand != null)
+                {
+                    ReleaseVideo(ref video);
+                    if (string.IsNullOrWhiteSpace(videoCommand.FilePath))
+                    {
+                        SetDescription("video (no file selected)");
+                    }
+                    else
+                    {
+                        MediaFoundationVideo candidate = new MediaFoundationVideo();
+                        if (candidate.Open(videoCommand.FilePath))
+                        {
+                            video = candidate;
+                            _isVideoOpen = true;
+                            firstSampleTime = -1;
+                            playbackStartTimestamp = 0;
+                            presenter.InvalidateTransform();
+                            SetDescription(string.Format(
+                                CultureInfo.InvariantCulture,
+                                "video {0} ({1}x{2}, muted, looping)",
+                                Path.GetFileName(videoCommand.FilePath),
+                                candidate.Width,
+                                candidate.Height));
+                        }
+                        else
+                        {
+                            candidate.Dispose();
+                            SetDescription("video " + Path.GetFileName(videoCommand.FilePath) + " failed to open: " + candidate.FailureReason);
+                        }
+                    }
+                }
+
+                if (frame != null)
+                {
+                    ReleaseVideo(ref video);
+                    try
+                    {
+                        presenter.ShowPixels(frame.Pixels, frame.Width, frame.Height, frame.Stretch);
+                        Interlocked.Increment(ref _framesPresented);
+                        SetDescription(frame.Description);
+                    }
+                    catch (Exception exception)
+                    {
+                        AppLog.WriteException("presenting a still frame failed for " + _deviceName, exception);
+                        SetDescription("presenting failed: " + exception.Message);
+                    }
+                }
+
+                if (video != null && video.IsOpen)
+                {
+                    if (paused)
+                    {
+                        // Paused means paused: the decoder is not pulled, so the last frame stays on screen
+                        // and no CPU or GPU time is spent on the video.
+                        Thread.Sleep(30);
+                        continue;
+                    }
+
+                    byte[]? pixels = video.ReadFrame(out long sampleTime);
+                    if (pixels == null)
+                    {
+                        if (sampleTime < 0)
+                        {
+                            // End of stream: loop back to the first frame.
+                            firstSampleTime = -1;
+                            playbackStartTimestamp = 0;
+                            if (!video.Rewind())
+                            {
+                                ReleaseVideo(ref video);
+                            }
+                        }
+                        else
+                        {
+                            Thread.Sleep(20);
+                        }
+
+                        continue;
+                    }
+
+                    if (firstSampleTime < 0)
+                    {
+                        firstSampleTime = sampleTime;
+                        playbackStartTimestamp = Stopwatch.GetTimestamp();
+                    }
+                    else
+                    {
+                        WaitForPlaybackTiming(sampleTime, firstSampleTime, playbackStartTimestamp);
+                    }
+
+                    try
+                    {
+                        presenter.ShowPixels(pixels, video.Width, video.Height, stretch);
+                        Interlocked.Increment(ref _framesPresented);
+                    }
+                    catch (Exception exception)
+                    {
+                        AppLog.WriteException("presenting a video frame failed for " + _deviceName, exception);
+                        ReleaseVideo(ref video);
+                        SetDescription("presenting the video failed: " + exception.Message);
+                    }
+
+                    continue;
+                }
+
+                lock (_sync)
+                {
+                    if (_pendingFrame == null && _pendingVideo == null && !_stopRenderThread)
+                    {
+                        Monitor.Wait(_sync, 250);
+                    }
+                }
+            }
+        }
+        catch (Exception exception)
+        {
+            AppLog.WriteException("the composition render thread failed for " + _deviceName, exception);
+            SetDescription("renderer failed: " + exception.Message);
+        }
+        finally
+        {
+            _renderThreadAlive = false;
+            if (video != null)
+            {
+                video.Dispose();
+            }
+
+            if (presenter != null)
+            {
+                presenter.Dispose();
+            }
+        }
+    }
+
+    /// <summary>Sleeps until the next sample is due, so a video plays at its own speed instead of decoding flat out.</summary>
+    private static void WaitForPlaybackTiming(long sampleTime, long firstSampleTime, long playbackStartTimestamp)
+    {
+        double dueSeconds = (sampleTime - firstSampleTime) / 10000000.0;
+        double elapsedSeconds = (Stopwatch.GetTimestamp() - playbackStartTimestamp) / (double)Stopwatch.Frequency;
+        double remainingSeconds = dueSeconds - elapsedSeconds;
+        if (remainingSeconds > 0.002)
+        {
+            int sleepMilliseconds = (int)Math.Min(1000.0, remainingSeconds * 1000.0);
+            if (sleepMilliseconds > 0)
+            {
+                Thread.Sleep(sleepMilliseconds);
+            }
+        }
+    }
+
+    private void ReleaseVideo(ref MediaFoundationVideo? video)
+    {
+        if (video == null)
+        {
+            return;
+        }
+
+        video.Dispose();
+        video = null;
+        _isVideoOpen = false;
+    }
+
+    // ── Teardown ──────────────────────────────────────────────────────────────────────────────────────────
+
+    private void DisposeWindow()
+    {
+        if (_windowHandle != IntPtr.Zero)
+        {
+            NativeMethods.DestroyWindow(_windowHandle);
+            _windowHandle = IntPtr.Zero;
+        }
+
+        _attached = false;
+    }
+
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+        StopSlideshow();
+
+        lock (_sync)
+        {
+            _stopRenderThread = true;
+            _pendingFrame = null;
+            _pendingVideo = null;
+            Monitor.PulseAll(_sync);
+        }
+
+        Thread? renderThread = _renderThread;
+        _renderThread = null;
+        if (renderThread != null && renderThread.IsAlive)
+        {
+            if (!renderThread.Join(RenderThreadJoinMilliseconds))
+            {
+                AppLog.Write("the composition render thread for " + _deviceName + " did not stop in time");
+            }
+        }
+
+        _renderThreadAlive = false;
+        DisposeWindow();
+    }
+}

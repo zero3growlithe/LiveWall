@@ -26,7 +26,7 @@ public sealed class WallpaperEngine : IDisposable
     private static readonly TimeSpan MinimumRetryInterval = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan FailingRetryInterval = TimeSpan.FromSeconds(30);
 
-    private readonly Dictionary<string, WallpaperSurface> _surfaces = new Dictionary<string, WallpaperSurface>(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, IWallpaperSurface> _surfaces = new Dictionary<string, IWallpaperSurface>(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _attachFailures = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _pauseReasons = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
     private readonly FullscreenWatcher _watcher = new FullscreenWatcher();
@@ -148,7 +148,7 @@ public sealed class WallpaperEngine : IDisposable
         AttachMissingSurfaces();
 
         List<string> staleDevices = new List<string>();
-        foreach (KeyValuePair<string, WallpaperSurface> pair in _surfaces)
+        foreach (KeyValuePair<string, IWallpaperSurface> pair in _surfaces)
         {
             if (MonitorExists(pair.Key))
             {
@@ -162,7 +162,7 @@ public sealed class WallpaperEngine : IDisposable
 
         for (int index = 0; index < staleDevices.Count; index++)
         {
-            WallpaperSurface surface = _surfaces[staleDevices[index]];
+            IWallpaperSurface surface = _surfaces[staleDevices[index]];
             surface.DescriptionChanged -= Surface_DescriptionChanged;
             surface.Dispose();
             _surfaces.Remove(staleDevices[index]);
@@ -194,7 +194,7 @@ public sealed class WallpaperEngine : IDisposable
             return "Not attached — " + failure;
         }
 
-        WallpaperSurface? surface = null;
+        IWallpaperSurface? surface = null;
         if (_surfaces.ContainsKey(deviceName))
         {
             surface = _surfaces[deviceName];
@@ -396,7 +396,7 @@ public sealed class WallpaperEngine : IDisposable
         _lastDecision = decision;
         bool stateChanged = false;
 
-        foreach (KeyValuePair<string, WallpaperSurface> pair in _surfaces)
+        foreach (KeyValuePair<string, IWallpaperSurface> pair in _surfaces)
         {
             string reason = string.Empty;
             bool shouldPause = false;
@@ -445,6 +445,20 @@ public sealed class WallpaperEngine : IDisposable
 
     // ── Surfaces ──
 
+    /// <summary>
+    /// Picks the drawing stack for one monitor. DirectComposition is the default: on Windows 11 24H2+ the
+    /// shell only composes DirectComposition content, and WPF content never reaches the desktop there.
+    /// </summary>
+    private IWallpaperSurface CreateSurface(string deviceName)
+    {
+        if (_settings.Renderer == RendererPreference.Composition)
+        {
+            return new CompositionSurface(deviceName);
+        }
+
+        return new WallpaperSurface(deviceName);
+    }
+
     private void RebuildSurfaces()
     {
         _lastRetryUtc = DateTime.UtcNow;
@@ -470,7 +484,7 @@ public sealed class WallpaperEngine : IDisposable
 
         foreach (MonitorDescriptor monitor in _monitors)
         {
-            WallpaperSurface surface = new WallpaperSurface(monitor.DeviceName);
+            IWallpaperSurface surface = CreateSurface(monitor.DeviceName);
             if (!surface.Attach(host, monitor.MonitorRectangle, workerRectangle, _settings.SurfaceCreation))
             {
                 _attachFailures[monitor.DeviceName] = surface.AttachFailureReason;
@@ -513,7 +527,7 @@ public sealed class WallpaperEngine : IDisposable
             }
 
             _attachFailures.Remove(monitor.DeviceName);
-            WallpaperSurface surface = new WallpaperSurface(monitor.DeviceName);
+            IWallpaperSurface surface = CreateSurface(monitor.DeviceName);
             if (!surface.Attach(host, monitor.MonitorRectangle, workerRectangle, _settings.SurfaceCreation))
             {
                 _attachFailures[monitor.DeviceName] = surface.AttachFailureReason;
@@ -532,7 +546,7 @@ public sealed class WallpaperEngine : IDisposable
 
     private void DisposeSurfaces()
     {
-        foreach (KeyValuePair<string, WallpaperSurface> pair in _surfaces)
+        foreach (KeyValuePair<string, IWallpaperSurface> pair in _surfaces)
         {
             pair.Value.DescriptionChanged -= Surface_DescriptionChanged;
             pair.Value.Dispose();
@@ -563,7 +577,7 @@ public sealed class WallpaperEngine : IDisposable
         testSource.Kind = WallpaperKind.SolidColor;
         testSource.BackgroundColor = colorHex;
 
-        foreach (KeyValuePair<string, WallpaperSurface> pair in _surfaces)
+        foreach (KeyValuePair<string, IWallpaperSurface> pair in _surfaces)
         {
             pair.Value.ApplySource(testSource);
         }
@@ -656,7 +670,7 @@ public sealed class WallpaperEngine : IDisposable
             MonitorDescriptor monitor = _monitors[index];
             builder.AppendLine("monitor " + (monitor.Index + 1).ToString(CultureInfo.InvariantCulture) + " " + monitor.DeviceName + " rect " + monitor.MonitorRectangle);
 
-            WallpaperSurface? surface = null;
+            IWallpaperSurface? surface = null;
             if (_surfaces.ContainsKey(monitor.DeviceName))
             {
                 surface = _surfaces[monitor.DeviceName];

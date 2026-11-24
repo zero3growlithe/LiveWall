@@ -14,8 +14,12 @@ namespace LiveWall;
 
 public partial class App : Application
 {
-    /// <summary>Stage 0 = hardware + child at creation; 1..3 are the fallbacks; 4 = every combination failed.</summary>
-    private const int MaximumCompositionStage = 3;
+    /// <summary>
+    /// Stage 0 = our DirectComposition renderer, 1 = WPF hardware, 2 = WPF software, 3 = every strategy failed.
+    /// The order is not arbitrary: on Windows 11 24H2+ only DirectComposition content is composed by the shell,
+    /// so that is tried first and the WPF paths are left as fallbacks for older builds.
+    /// </summary>
+    private const int MaximumCompositionStage = 2;
 
     private Mutex? _singleInstanceMutex;
     private WallpaperEngine? _engine;
@@ -45,7 +49,7 @@ public partial class App : Application
         bool firstRun = !File.Exists(AppLog.SettingsPath);
         _settings = SettingsService.Load();
 
-        if (_settings.RenderMode == RenderModePreference.Software)
+        if (_settings.Renderer == RendererPreference.WpfSoftware || _settings.RenderMode == RenderModePreference.Software)
         {
             // Must happen before any window exists: WPF decides the render path per window at creation.
             RenderOptions.ProcessRenderMode = RenderMode.SoftwareOnly;
@@ -151,28 +155,25 @@ public partial class App : Application
     }
 
     /// <summary>
-    /// The combinations tried, in order: the hardware path first (cheapest), then software rendering, each with
-    /// the window created in place and with the older "popup, then re-parent" order.
+    /// The drawing stacks tried, in order: DirectComposition first (the only one the shell composes on
+    /// Windows 11 24H2+), then the two WPF paths for older builds.
     /// </summary>
     private static void ApplyCompositionStage(WallpaperSettings settings)
     {
+        settings.SurfaceCreation = SurfaceCreationMode.ChildAtCreation;
         switch (settings.CompositionRetryStage)
         {
             case 1:
+                settings.Renderer = RendererPreference.WpfHardware;
                 settings.RenderMode = RenderModePreference.Hardware;
-                settings.SurfaceCreation = SurfaceCreationMode.ReparentedPopup;
                 break;
             case 2:
+                settings.Renderer = RendererPreference.WpfSoftware;
                 settings.RenderMode = RenderModePreference.Software;
-                settings.SurfaceCreation = SurfaceCreationMode.ChildAtCreation;
-                break;
-            case 3:
-                settings.RenderMode = RenderModePreference.Software;
-                settings.SurfaceCreation = SurfaceCreationMode.ReparentedPopup;
                 break;
             default:
+                settings.Renderer = RendererPreference.Composition;
                 settings.RenderMode = RenderModePreference.Hardware;
-                settings.SurfaceCreation = SurfaceCreationMode.ChildAtCreation;
                 break;
         }
     }
@@ -184,9 +185,21 @@ public partial class App : Application
             return "unknown";
         }
 
-        return (_settings.RenderMode == RenderModePreference.Software ? "software rendering" : "hardware rendering")
-            + " + " + (_settings.SurfaceCreation == SurfaceCreationMode.ChildAtCreation ? "child at creation" : "reparented popup")
-            + " (stage " + _settings.CompositionRetryStage.ToString(CultureInfo.InvariantCulture) + ")";
+        string renderer;
+        switch (_settings.Renderer)
+        {
+            case RendererPreference.WpfHardware:
+                renderer = "WPF hardware rendering";
+                break;
+            case RendererPreference.WpfSoftware:
+                renderer = "WPF software rendering";
+                break;
+            default:
+                renderer = "DirectComposition";
+                break;
+        }
+
+        return renderer + " (stage " + _settings.CompositionRetryStage.ToString(CultureInfo.InvariantCulture) + ")";
     }
 
     /// <summary>Starts a fresh instance after this one is gone, so a render-mode change can take effect.</summary>

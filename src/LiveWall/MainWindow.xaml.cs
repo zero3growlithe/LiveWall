@@ -66,7 +66,7 @@ public partial class MainWindow : Window
             PauseFullscreenCheckBox.IsChecked = _settings.PauseWhenFullscreen;
             StartMinimizedCheckBox.IsChecked = _settings.StartMinimized;
             StartWithWindowsCheckBox.IsChecked = StartupService.IsRegistered();
-            SoftwareRenderingCheckBox.IsChecked = _settings.RenderMode == RenderModePreference.Software;
+            RendererComboBox.SelectedIndex = (int)_settings.Renderer;
         }
         finally
         {
@@ -369,7 +369,8 @@ public partial class MainWindow : Window
     private void Apply_Click(object sender, RoutedEventArgs e)
     {
         _settings.SameForAllMonitors = SameForAllCheckBox.IsChecked == true;
-        _settings.RenderMode = SoftwareRenderingCheckBox.IsChecked == true ? RenderModePreference.Software : RenderModePreference.Hardware;
+        _settings.Renderer = (RendererPreference)Math.Clamp(RendererComboBox.SelectedIndex, 0, 2);
+        _settings.RenderMode = _settings.Renderer == RendererPreference.WpfSoftware ? RenderModePreference.Software : RenderModePreference.Hardware;
         SaveEditor();
         _settings.PauseWhenMaximized = PauseMaximizedCheckBox.IsChecked == true;
         _settings.PauseWhenFullscreen = PauseFullscreenCheckBox.IsChecked == true;
@@ -455,14 +456,15 @@ public partial class MainWindow : Window
         ApplyEditorChanges();
     }
 
-    private void SoftwareRenderingCheckBox_Changed(object sender, RoutedEventArgs e)
+    private void RendererComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_suppressEditorEvents)
         {
             return;
         }
 
-        _settings.RenderMode = SoftwareRenderingCheckBox.IsChecked == true ? RenderModePreference.Software : RenderModePreference.Hardware;
+        _settings.Renderer = (RendererPreference)Math.Clamp(RendererComboBox.SelectedIndex, 0, 2);
+        _settings.RenderMode = _settings.Renderer == RendererPreference.WpfSoftware ? RenderModePreference.Software : RenderModePreference.Hardware;
         SettingsService.Save(_settings);
     }
 
@@ -471,7 +473,8 @@ public partial class MainWindow : Window
     {
         try
         {
-            _settings.RenderMode = SoftwareRenderingCheckBox.IsChecked == true ? RenderModePreference.Software : RenderModePreference.Hardware;
+            _settings.Renderer = (RendererPreference)Math.Clamp(RendererComboBox.SelectedIndex, 0, 2);
+            _settings.RenderMode = _settings.Renderer == RendererPreference.WpfSoftware ? RenderModePreference.Software : RenderModePreference.Hardware;
             SettingsService.Save(_settings);
             SaveWindowPlacement();
 
