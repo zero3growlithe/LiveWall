@@ -1036,12 +1036,14 @@ public sealed class CompositionSurface : IWallpaperSurface
                 "LiveWall");
             Directory.CreateDirectory(directory);
             string path = Path.Combine(directory, "first-video-frame.png");
+            // Bgr32, not Bgra32: a decoder's RGB32 frame leaves the fourth byte undefined, so an alpha-aware
+            // encoder wrote a fully transparent PNG that showed up as a black rectangle in every viewer.
             BitmapSource frame = BitmapSource.Create(
                 width,
                 height,
                 96,
                 96,
-                PixelFormats.Bgra32,
+                PixelFormats.Bgr32,
                 null,
                 pixels,
                 width * 4);

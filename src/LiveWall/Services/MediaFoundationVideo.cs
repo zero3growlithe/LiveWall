@@ -136,9 +136,14 @@ internal sealed class MediaFoundationVideo : IDisposable
 
             using IMFMediaType currentType = _reader.GetCurrentMediaType(SourceReaderIndex.FirstVideoStream);
             using IMFAttributes currentAttributes = currentType.QueryInterface<IMFAttributes>();
+            // MF_MT_FRAME_SIZE packs the WIDTH in the high 32 bits and the HEIGHT in the low 32 bits — that is
+            // exactly what MFGetAttributeSize unpacks. Reading it the other way round transposes every frame:
+            // a 1920x1080 video becomes a 1080x1920 texture holding the left half of each row, with black where
+            // the rows run out. That single inversion looked like "cropped, stretched 200%, black bar at the
+            // bottom, only the left half visible" and sent this renderer through five rounds of false trails.
             ulong packedFrameSize = currentAttributes.GetUInt64(MediaTypeFrameSizeKey);
-            Width = (int)(packedFrameSize & 0xFFFFFFFFUL);
-            Height = (int)(packedFrameSize >> 32);
+            Width = (int)(packedFrameSize >> 32);
+            Height = (int)(packedFrameSize & 0xFFFFFFFFUL);
 
             if (Width <= 0 || Height <= 0)
             {
@@ -175,9 +180,10 @@ internal sealed class MediaFoundationVideo : IDisposable
             FailureReason = string.Empty;
             AppLog.Write(string.Format(
                 CultureInfo.InvariantCulture,
-                "video media type: {0}x{1}, {2}, stride {3}{4}, interlace mode {5}",
+                "video media type: {0}x{1} (frame size 0x{2:X8}), {3}, stride {4}{5}, interlace mode {6}",
                 Width,
                 Height,
+                packedFrameSize,
                 _pixelLayout,
                 Stride,
                 Stride < 0 ? " (bottom-up)" : string.Empty,
