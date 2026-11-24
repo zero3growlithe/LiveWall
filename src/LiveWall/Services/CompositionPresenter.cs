@@ -118,6 +118,39 @@ internal sealed class CompositionPresenter : IDisposable
     }
 
     /// <summary>
+    /// A decoder runs on Media Foundation's own threads, so several threads end up calling into one immediate
+    /// context. D3D11 demands multithread protection for that; without it the hardware decode path either
+    /// refuses to start or corrupts frames.
+    /// </summary>
+    private static void EnableMultithreadProtection(ID3D11DeviceContext context, ID3D11Device device)
+    {
+        try
+        {
+            using ID3D11Multithread? fromContext = context.QueryInterfaceOrNull<ID3D11Multithread>();
+            if (fromContext != null)
+            {
+                fromContext.SetMultithreadProtected(new RawBool(true));
+                AppLog.Write("Direct3D 11 multithread protection: enabled");
+                return;
+            }
+
+            using ID3D11Multithread? fromDevice = device.QueryInterfaceOrNull<ID3D11Multithread>();
+            if (fromDevice != null)
+            {
+                fromDevice.SetMultithreadProtected(new RawBool(true));
+                AppLog.Write("Direct3D 11 multithread protection: enabled");
+                return;
+            }
+
+            AppLog.Write("Direct3D 11 multithread protection: not available");
+        }
+        catch (Exception exception)
+        {
+            AppLog.WriteException("could not enable Direct3D 11 multithread protection", exception);
+        }
+    }
+
+    /// <summary>
     /// Creates the D3D11 device, the DirectComposition target bound to <paramref name="windowHandle"/> and the
     /// root visual. <paramref name="devicePixelsPerDip"/> is 96/DPI: DirectComposition positions visuals in
     /// DIPs and then scales by the window's DPI, so pixel-exact output needs the reciprocal here.
@@ -135,19 +168,37 @@ internal sealed class CompositionPresenter : IDisposable
 
         try
         {
-            _device = D3D11.D3D11CreateDevice(DriverType.Hardware, DeviceCreationFlags.BgraSupport, RequestedFeatureLevels);
+            // VideoSupport is what makes the device usable as a decoder target: without it Media Foundation
+            // refuses the DXGI device manager and every video silently falls back to software decoding, which
+            // is exactly the one core of CPU a wallpaper should not be spending.
+            _device = D3D11.D3D11CreateDevice(
+                DriverType.Hardware,
+                DeviceCreationFlags.BgraSupport | DeviceCreationFlags.VideoSupport,
+                RequestedFeatureLevels);
             _deviceDescription = "Direct3D 11 hardware";
         }
-        catch (Exception hardwareFailure)
+        catch (Exception videoSupportFailure)
         {
-            // A wallpaper is not worth a black screen: the WARP software rasteriser can still present through
-            // DirectComposition, just with more CPU work.
-            AppLog.Write("hardware Direct3D device failed, falling back to WARP: " + hardwareFailure.Message);
-            _device = D3D11.D3D11CreateDevice(DriverType.Warp, DeviceCreationFlags.BgraSupport, RequestedFeatureLevels);
-            _deviceDescription = "Direct3D 11 WARP (software)";
+            // A driver without video support must not cost the wallpaper its hardware renderer, so the plain
+            // device is tried before the software rasteriser: only videos pay for this, not the wallpaper.
+            AppLog.Write("Direct3D device without video support failed: " + videoSupportFailure.Message);
+            try
+            {
+                _device = D3D11.D3D11CreateDevice(DriverType.Hardware, DeviceCreationFlags.BgraSupport, RequestedFeatureLevels);
+                _deviceDescription = "Direct3D 11 hardware (no video decoding)";
+            }
+            catch (Exception hardwareFailure)
+            {
+                // A wallpaper is not worth a black screen: the WARP software rasteriser can still present
+                // through DirectComposition, just with more CPU work.
+                AppLog.Write("hardware Direct3D device failed, falling back to WARP: " + hardwareFailure.Message);
+                _device = D3D11.D3D11CreateDevice(DriverType.Warp, DeviceCreationFlags.BgraSupport, RequestedFeatureLevels);
+                _deviceDescription = "Direct3D 11 WARP (software)";
+            }
         }
 
         _context = _device.ImmediateContext;
+        EnableMultithreadProtection(_context, _device);
         _dxgiDevice = _device.QueryInterface<IDXGIDevice>();
         _compositionDevice = DComp.DCompositionCreateDevice<IDCompositionDevice>(_dxgiDevice);
         _compositionDevice.CreateTargetForHwnd(windowHandle, new RawBool(false), out IDCompositionTarget compositionTarget).CheckError();

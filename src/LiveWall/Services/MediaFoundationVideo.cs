@@ -164,11 +164,25 @@ internal sealed class MediaFoundationVideo : IDisposable
             {
                 // A DXGI device manager is what tells Media Foundation to decode on the graphics card. The
                 // advanced video processing flag lets the video processor convert and copy the hardware frame
-                // back to a normal memory buffer, which is all the wallpaper needs.
-                _deviceManager = MediaFactory.MFCreateDXGIDeviceManager();
-                _deviceManager.ResetDevice(decoderDevice);
-                _readerAttributes.Set(SourceReaderAttributeKeys.D3DManager, _deviceManager);
-                _readerAttributes.Set(SourceReaderAttributeKeys.EnableAdvancedVideoProcessing, 1u);
+                // back to a normal memory buffer, which is all the wallpaper needs. Each step is logged, so a
+                // driver that refuses hardware decoding leaves a reason behind instead of a silent fallback.
+                try
+                {
+                    _deviceManager = MediaFactory.MFCreateDXGIDeviceManager();
+                    AppLog.Write("dxva: device manager created");
+                    _deviceManager.ResetDevice(decoderDevice);
+                    AppLog.Write("dxva: device manager bound to the Direct3D device");
+                    _readerAttributes.Set(SourceReaderAttributeKeys.D3DManager, _deviceManager);
+                    _readerAttributes.Set(SourceReaderAttributeKeys.EnableAdvancedVideoProcessing, 1u);
+                    AppLog.Write("dxva: reader attributes prepared for hardware decoding");
+                }
+                catch (Exception hardwareSetupFailure)
+                {
+                    FailureReason = "hardware decoding could not be prepared: " + hardwareSetupFailure.Message;
+                    AppLog.WriteException("dxva: preparing hardware decoding failed", hardwareSetupFailure);
+                    Close();
+                    return false;
+                }
             }
 
             _reader = MediaFactory.MFCreateSourceReaderFromURL(path, _readerAttributes);
@@ -251,11 +265,14 @@ internal sealed class MediaFoundationVideo : IDisposable
                 byte[]? probe = ReadFrame(out long probeTime);
                 if (probe == null && probeTime >= 0)
                 {
-                    FailureReason = "the hardware decoder produced no readable frame";
+                    string reason = string.IsNullOrEmpty(FailureReason) ? "no frame was produced" : FailureReason;
+                    FailureReason = "the hardware decoder produced no readable frame (" + reason + ")";
+                    AppLog.Write("dxva: probe failed — " + FailureReason);
                     Close();
                     return false;
                 }
 
+                AppLog.Write("dxva: probe frame decoded and read back successfully");
                 _reader.SetCurrentPosition(0);
                 UsesHardwareDecoder = true;
             }
