@@ -105,6 +105,9 @@ public sealed class WallpaperSurface : IDisposable
         get { return _hostDescription; }
     }
 
+    /// <summary>How this window was handed to the desktop host ("child at creation" / "reparented popup").</summary>
+    public string CreationMode { get; private set; } = "not created";
+
     public bool IsAttached
     {
         get { return _interopSource != null; }
@@ -127,7 +130,7 @@ public sealed class WallpaperSurface : IDisposable
 
     // ── Attach ──
 
-    public bool Attach(DesktopHost host, RECT monitorRectangle, RECT hostRectangle)
+    public bool Attach(DesktopHost host, RECT monitorRectangle, RECT hostRectangle, SurfaceCreationMode creationMode)
     {
         if (_disposed)
         {
@@ -143,45 +146,118 @@ public sealed class WallpaperSurface : IDisposable
         _pixelWidth = Math.Max(monitorRectangle.Width, 1);
         _pixelHeight = Math.Max(monitorRectangle.Height, 1);
 
+        // A window created straight into the host is the normal case: WPF sets up its presentation for a child
+        // window, which is what the shell composes. Creating a popup and re-parenting it afterwards leaves WPF
+        // presenting to a surface that is no longer part of that composition, which is the "attached, playing,
+        // nothing on screen" case. The old order is kept as a fallback for machines where creation in place
+        // fails outright.
+        string creationFailure;
+        bool createdAsChild = creationMode == SurfaceCreationMode.ChildAtCreation && TryCreateSurface(host, true, out creationFailure);
+        if (!createdAsChild && !TryCreateSurface(host, false, out creationFailure))
+        {
+            AttachFailureReason = creationFailure;
+            return false;
+        }
+
+        if (!createdAsChild || (_interopSource != null && NativeMethods.GetParent(_interopSource.Handle) != host.ParentWindow))
+        {
+            if (!TryParentToDesktopHost(host, out string parentFailure))
+            {
+                AttachFailureReason = parentFailure;
+                DisposeSurfaceWindow();
+                return false;
+            }
+        }
+
+        ApplyLayeredWindow(host);
+        PlaceWindow(host, monitorRectangle, hostRectangle);
+        _hostDescription = host.Describe();
+        AppLog.Write("surface attached for " + _deviceName + " (" + CreationMode + ") at " + monitorRectangle + " under " + host.Describe());
+        return true;
+    }
+
+    private bool TryCreateSurface(DesktopHost host, bool asChild, out string failure)
+    {
+        failure = string.Empty;
+
         try
         {
             HwndSourceParameters parameters = new HwndSourceParameters("LiveWallSurface_" + SanitizeWindowName(_deviceName));
-            parameters.WindowStyle = PopupWindowStyle | VisibleWindowStyle;
+            if (asChild)
+            {
+                parameters.WindowStyle = ChildWindowStyle | VisibleWindowStyle;
+                parameters.ParentWindow = host.ParentWindow;
+            }
+            else
+            {
+                parameters.WindowStyle = PopupWindowStyle | VisibleWindowStyle;
+            }
+
             parameters.ExtendedWindowStyle = NoActivateExtendedStyle | ToolWindowExtendedStyle;
             parameters.PositionX = OffscreenCoordinate;
             parameters.PositionY = OffscreenCoordinate;
             parameters.Width = 1;
             parameters.Height = 1;
             parameters.UsesPerPixelOpacity = false;
+            parameters.TreatAsInputRoot = false;
 
             _interopSource = new HwndSource(parameters);
             _interopSource.RootVisual = _root;
-
-            if (!TryParentToDesktopHost(host, out string parentFailure))
-            {
-                AttachFailureReason = parentFailure;
-                _interopSource.Dispose();
-                _interopSource = null;
-                return false;
-            }
-
-            PlaceWindow(host, monitorRectangle, hostRectangle);
-            _hostDescription = host.Describe();
-            AppLog.Write("surface attached for " + _deviceName + " at " + monitorRectangle + " under " + host.Describe());
+            CreationMode = asChild ? "child at creation" : "reparented popup";
             return true;
         }
         catch (Exception exception)
         {
-            AttachFailureReason = "creating the wallpaper window failed: " + exception.Message;
-            AppLog.WriteException("surface attach failed for " + _deviceName, exception);
-            if (_interopSource != null)
-            {
-                _interopSource.Dispose();
-                _interopSource = null;
-            }
-
+            failure = "creating the wallpaper window failed: " + exception.Message;
+            AppLog.WriteException("surface creation failed for " + _deviceName + " (asChild=" + asChild.ToString() + ")", exception);
+            DisposeSurfaceWindow();
             return false;
         }
+    }
+
+    /// <summary>
+    /// The raised desktop needs the surface to be a layered child with constant alpha 255 — that is the shape
+    /// Microsoft's shell composes for windows under the icons on build 26100+.
+    /// </summary>
+    private void ApplyLayeredWindow(DesktopHost host)
+    {
+        if (_interopSource == null || !host.UseLayeredWindow)
+        {
+            return;
+        }
+
+        IntPtr surfaceHandle = _interopSource.Handle;
+        int extendedStyle = NoActivateExtendedStyle | ToolWindowExtendedStyle | NativeMethods.WS_EX_LAYERED;
+        NativeMethods.SetWindowLongPtr(surfaceHandle, NativeMethods.GWL_EXSTYLE, new IntPtr(extendedStyle));
+        NativeMethods.SetLayeredWindowAttributes(surfaceHandle, 0, 255, NativeMethods.LWA_ALPHA);
+        NativeMethods.SetWindowPos(
+            surfaceHandle,
+            IntPtr.Zero,
+            0,
+            0,
+            0,
+            0,
+            NativeMethods.SWP_NOMOVE | NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOZORDER
+                | NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_FRAMECHANGED);
+    }
+
+    private void DisposeSurfaceWindow()
+    {
+        if (_interopSource == null)
+        {
+            return;
+        }
+
+        try
+        {
+            _interopSource.Dispose();
+        }
+        catch (Exception exception)
+        {
+            AppLog.WriteException("disposing a surface window failed", exception);
+        }
+
+        _interopSource = null;
     }
 
     /// <summary>
@@ -780,6 +856,7 @@ public sealed class WallpaperSurface : IDisposable
             + " | size=" + _pixelWidth.ToString(CultureInfo.InvariantCulture) + "x" + _pixelHeight.ToString(CultureInfo.InvariantCulture)
             + " | paused=" + (_paused ? "yes" : "no")
             + " | videoOpen=" + (_videoOpened ? "yes" : "no")
+            + " | created=" + CreationMode
             + " | host=" + _hostDescription
             + " | what=" + ActiveDescription;
     }

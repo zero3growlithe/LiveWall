@@ -502,7 +502,12 @@ public partial class MainWindow : Window
         string result;
         try
         {
-            result = await _engine.RunCompositionCheckAsync();
+            CompositionCheckReport report = await _engine.RunCompositionCheckAsync();
+            result = report.Text;
+            if (report.AnyVisible)
+            {
+                _settings.CompositionVerified = true;
+            }
         }
         catch (Exception exception)
         {

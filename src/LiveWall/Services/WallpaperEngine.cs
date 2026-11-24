@@ -471,7 +471,7 @@ public sealed class WallpaperEngine : IDisposable
         foreach (MonitorDescriptor monitor in _monitors)
         {
             WallpaperSurface surface = new WallpaperSurface(monitor.DeviceName);
-            if (!surface.Attach(host, monitor.MonitorRectangle, workerRectangle))
+            if (!surface.Attach(host, monitor.MonitorRectangle, workerRectangle, _settings.SurfaceCreation))
             {
                 _attachFailures[monitor.DeviceName] = surface.AttachFailureReason;
                 surface.Dispose();
@@ -514,7 +514,7 @@ public sealed class WallpaperEngine : IDisposable
 
             _attachFailures.Remove(monitor.DeviceName);
             WallpaperSurface surface = new WallpaperSurface(monitor.DeviceName);
-            if (!surface.Attach(host, monitor.MonitorRectangle, workerRectangle))
+            if (!surface.Attach(host, monitor.MonitorRectangle, workerRectangle, _settings.SurfaceCreation))
             {
                 _attachFailures[monitor.DeviceName] = surface.AttachFailureReason;
                 surface.Dispose();
@@ -584,19 +584,22 @@ public sealed class WallpaperEngine : IDisposable
     /// tell "the shell is not composing our window" apart from "wrong z-order or position": a monitor covered
     /// by a maximized window is skipped, because the sample would read that window instead of the desktop.
     /// </summary>
-    public async Task<string> RunCompositionCheckAsync()
+    public async Task<CompositionCheckReport> RunCompositionCheckAsync()
     {
         if (!_isRunning || _surfaces.Count == 0)
         {
-            return "not run — the engine is not drawing anything yet";
+            return new CompositionCheckReport(false, false, "not run — the engine is not drawing anything yet");
         }
+
+        bool anyVisible = false;
+        bool anyNotVisible = false;
+        List<string> lines = new List<string>();
 
         try
         {
             ApplyTestColour(CompositionTestColour);
             await Task.Delay(700);
 
-            List<string> lines = new List<string>();
             for (int index = 0; index < _monitors.Count; index++)
             {
                 MonitorDescriptor monitor = _monitors[index];
@@ -610,15 +613,24 @@ public sealed class WallpaperEngine : IDisposable
 
                 string detail;
                 bool visible = DesktopProbe.Matches(monitor.MonitorRectangle, 255, 0, 255, 30, out detail);
+                if (visible)
+                {
+                    anyVisible = true;
+                }
+                else
+                {
+                    anyNotVisible = true;
+                }
+
                 lines.Add(label + ": " + (visible ? "wallpaper VISIBLE" : "wallpaper NOT VISIBLE") + " — " + detail);
             }
-
-            return string.Join(Environment.NewLine, lines);
         }
         finally
         {
             RestoreConfiguredSources();
         }
+
+        return new CompositionCheckReport(anyVisible, anyNotVisible, string.Join(Environment.NewLine, lines));
     }
 
     /// <summary>Everything the diagnostics window shows, in one string.</summary>
@@ -628,6 +640,9 @@ public sealed class WallpaperEngine : IDisposable
         builder.AppendLine("LiveWall diagnostics");
         builder.AppendLine("engine running: " + (_isRunning ? "yes" : "no") + (IsManualPause ? " (manually paused)" : string.Empty));
         builder.AppendLine("render mode: " + (_settings.RenderMode == RenderModePreference.Software ? "software (GDI)" : "hardware"));
+        builder.AppendLine("surface creation: " + (_settings.SurfaceCreation == SurfaceCreationMode.ChildAtCreation ? "child at creation" : "reparented popup"));
+        builder.AppendLine("composition verified: " + (_settings.CompositionVerified ? "yes" : "no")
+            + " (retry stage " + _settings.CompositionRetryStage.ToString(CultureInfo.InvariantCulture) + ")");
         builder.AppendLine("composition check: " + (string.IsNullOrEmpty(_settings.CompositionCheckResult) ? "not run yet" : _settings.CompositionCheckResult.Replace(Environment.NewLine, " | ")));
         builder.AppendLine("desktop host: " + _desktopWindowService.Host.Describe());
         builder.AppendLine("desktop host alive: " + (_desktopWindowService.IsAlive ? "yes" : "no"));

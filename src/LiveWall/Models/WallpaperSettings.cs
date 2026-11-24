@@ -35,8 +35,17 @@ public sealed class WallpaperSettings
     /// </summary>
     public RenderModePreference RenderMode { get; set; } = RenderModePreference.Hardware;
 
+    /// <summary>How the wallpaper window is created (see <see cref="SurfaceCreationMode"/>).</summary>
+    public SurfaceCreationMode SurfaceCreation { get; set; } = SurfaceCreationMode.ChildAtCreation;
+
     /// <summary>Result of the last automatic composition check, or empty when it never ran.</summary>
     public string CompositionCheckResult { get; set; } = string.Empty;
+
+    /// <summary>True once a check proved that the wallpaper reaches the screen.</summary>
+    public bool CompositionVerified { get; set; }
+
+    /// <summary>How many automatic combinations were already tried (0 = hardware + child at creation).</summary>
+    public int CompositionRetryStage { get; set; }
 
     // Saved settings-window placement, so the window reopens where it was left instead of centred.
     public double? WindowLeft { get; set; }

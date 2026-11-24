@@ -1,4 +1,6 @@
 using System;
+using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
@@ -12,6 +14,9 @@ namespace LiveWall;
 
 public partial class App : Application
 {
+    /// <summary>Stage 0 = hardware + child at creation; 1..3 are the fallbacks; 4 = every combination failed.</summary>
+    private const int MaximumCompositionStage = 3;
+
     private Mutex? _singleInstanceMutex;
     private WallpaperEngine? _engine;
     private WallpaperSettings? _settings;
@@ -79,7 +84,10 @@ public partial class App : Application
 
         UpdateTrayStatus();
 
-        if (_settings.StartAutomatically && string.IsNullOrEmpty(_settings.CompositionCheckResult))
+        bool shouldCheckComposition = _settings.StartAutomatically
+            && !_settings.CompositionVerified
+            && _settings.CompositionRetryStage <= MaximumCompositionStage;
+        if (shouldCheckComposition)
         {
             RunStartupCompositionCheck();
         }
@@ -99,18 +107,109 @@ public partial class App : Application
                 return;
             }
 
-            string result = await _engine.RunCompositionCheckAsync();
-            _settings.CompositionCheckResult = result;
+            CompositionCheckReport report = await _engine.RunCompositionCheckAsync();
+            _settings.CompositionCheckResult = report.Text;
             SettingsService.Save(_settings);
-            AppLog.Write("composition check: " + result.Replace(Environment.NewLine, " | "));
+            AppLog.Write("composition check (" + DescribeCurrentStrategy() + "): " + report.Text.Replace(Environment.NewLine, " | "));
             if (_mainWindow != null)
             {
                 _mainWindow.RefreshFromEngine();
             }
+
+            if (report.AnyVisible)
+            {
+                _settings.CompositionVerified = true;
+                SettingsService.Save(_settings);
+                AppLog.Write("wallpaper is reaching the screen with " + DescribeCurrentStrategy());
+                return;
+            }
+
+            if (!report.AnyNotVisible)
+            {
+                // Every monitor was covered while probing: nothing was learned, do not start a restart loop.
+                return;
+            }
+
+            if (_settings.CompositionRetryStage >= MaximumCompositionStage)
+            {
+                _settings.CompositionRetryStage = MaximumCompositionStage + 1;
+                SettingsService.Save(_settings);
+                AppLog.Write("every rendering strategy failed — the shell is not composing our window on this build");
+                return;
+            }
+
+            _settings.CompositionRetryStage++;
+            ApplyCompositionStage(_settings);
+            SettingsService.Save(_settings);
+            AppLog.Write("wallpaper is not visible; retrying with " + DescribeCurrentStrategy());
+            RestartDetached();
         }
         catch (Exception exception)
         {
             AppLog.WriteException("the startup composition check failed", exception);
+        }
+    }
+
+    /// <summary>
+    /// The combinations tried, in order: the hardware path first (cheapest), then software rendering, each with
+    /// the window created in place and with the older "popup, then re-parent" order.
+    /// </summary>
+    private static void ApplyCompositionStage(WallpaperSettings settings)
+    {
+        switch (settings.CompositionRetryStage)
+        {
+            case 1:
+                settings.RenderMode = RenderModePreference.Hardware;
+                settings.SurfaceCreation = SurfaceCreationMode.ReparentedPopup;
+                break;
+            case 2:
+                settings.RenderMode = RenderModePreference.Software;
+                settings.SurfaceCreation = SurfaceCreationMode.ChildAtCreation;
+                break;
+            case 3:
+                settings.RenderMode = RenderModePreference.Software;
+                settings.SurfaceCreation = SurfaceCreationMode.ReparentedPopup;
+                break;
+            default:
+                settings.RenderMode = RenderModePreference.Hardware;
+                settings.SurfaceCreation = SurfaceCreationMode.ChildAtCreation;
+                break;
+        }
+    }
+
+    private string DescribeCurrentStrategy()
+    {
+        if (_settings == null)
+        {
+            return "unknown";
+        }
+
+        return (_settings.RenderMode == RenderModePreference.Software ? "software rendering" : "hardware rendering")
+            + " + " + (_settings.SurfaceCreation == SurfaceCreationMode.ChildAtCreation ? "child at creation" : "reparented popup")
+            + " (stage " + _settings.CompositionRetryStage.ToString(CultureInfo.InvariantCulture) + ")";
+    }
+
+    /// <summary>Starts a fresh instance after this one is gone, so a render-mode change can take effect.</summary>
+    private void RestartDetached()
+    {
+        try
+        {
+            Process current = Process.GetCurrentProcess();
+            string executablePath = current.MainModule == null ? string.Empty : current.MainModule.FileName;
+            if (string.IsNullOrEmpty(executablePath))
+            {
+                return;
+            }
+
+            ProcessStartInfo startInfo = new ProcessStartInfo("cmd.exe", "/c timeout /t 1 >nul & start "" "" + executablePath + """);
+            startInfo.CreateNoWindow = true;
+            startInfo.UseShellExecute = false;
+            Process.Start(startInfo);
+            ExitApplication();
+        }
+        catch (Exception exception)
+        {
+            AppLog.WriteException("restarting for a renderer retry failed", exception);
         }
     }
 

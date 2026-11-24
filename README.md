@@ -92,9 +92,15 @@ artifact.
   under the desktop. The app handles that topology, and **Compatibility → `Check what the desktop shows`**
   (also run automatically once on first launch) proves whether pixels really reach the screen: it paints
   magenta, samples the monitor back and reports `VISIBLE` / `NOT VISIBLE` per display.
-- If that check says `NOT VISIBLE`, tick **Compatibility → `Use software rendering`** and press
-  `Restart LiveWall`: the hardware path never lands in the shell's composition tree on some builds, while
-  the GDI path does.
+- If that check says `NOT VISIBLE`, the app walks through the four rendering combinations by itself
+  (hardware/software × window created in place / popup re-parented), restarting once per combination and
+  stopping after the last one, logging every attempt:
+  `composition check (hardware rendering + child at creation (stage 0)): …`. The winning combination is
+  what stays configured; `Compatibility → Use software rendering` and `Restart LiveWall` set it by hand.
+- A window created straight into the desktop host is the normal case: WPF sets its presentation up for a
+  child window, which is what the shell composes. Creating a popup and re-parenting it afterwards leaves
+  WPF presenting to a surface that is no longer part of that composition — the "attached, playing,
+  nothing on screen" case, which is why the in-place creation order comes first.
 - The desktop remains fully interactive: the surfaces never take focus, clicks or Alt+Tab slots.
 - Diagnostics: `%LocalAppData%\LiveWall\crash.log` (attach failures, Explorer restarts, media errors).
   An attach failure names the host window class and the exact Win32 error `SetParent` returned.
