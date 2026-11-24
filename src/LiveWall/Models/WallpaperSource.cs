@@ -1,0 +1,61 @@
+using System;
+using System.Globalization;
+
+namespace LiveWall.Models;
+
+/// <summary>
+/// One monitor's wallpaper definition. Cloned per monitor when the user does not want a shared setup.
+/// </summary>
+public sealed class WallpaperSource
+{
+    public WallpaperKind Kind { get; set; } = WallpaperKind.SolidColor;
+
+    /// <summary>Image file or video file, depending on <see cref="Kind"/>.</summary>
+    public string FilePath { get; set; } = string.Empty;
+
+    /// <summary>Slideshow folder, used when <see cref="Kind"/> is <see cref="WallpaperKind.Slideshow"/>.</summary>
+    public string FolderPath { get; set; } = string.Empty;
+
+    public bool IncludeSubfolders { get; set; }
+
+    public int SlideshowIntervalSeconds { get; set; } = 30;
+
+    public bool Shuffle { get; set; } = true;
+
+    public WallpaperStretch Stretch { get; set; } = WallpaperStretch.Fill;
+
+    public string BackgroundColor { get; set; } = "#000000";
+
+    public bool MuteVideo { get; set; } = true;
+
+    public int VideoVolume { get; set; }
+
+    public WallpaperSource Clone()
+    {
+        return (WallpaperSource)MemberwiseClone();
+    }
+
+    public string Describe()
+    {
+        switch (Kind)
+        {
+            case WallpaperKind.Image:
+                return string.IsNullOrWhiteSpace(FilePath) ? "image (no file selected)" : "image " + FilePath;
+            case WallpaperKind.Slideshow:
+                return string.Format(
+                    CultureInfo.InvariantCulture,
+                    "slideshow {0} every {1}s",
+                    string.IsNullOrWhiteSpace(FolderPath) ? "(no folder selected)" : FolderPath,
+                    SlideshowIntervalSeconds);
+            case WallpaperKind.Video:
+                return string.IsNullOrWhiteSpace(FilePath) ? "video (no file selected)" : "video " + FilePath;
+            default:
+                return "solid colour " + BackgroundColor;
+        }
+    }
+
+    public override string ToString()
+    {
+        return Describe();
+    }
+}

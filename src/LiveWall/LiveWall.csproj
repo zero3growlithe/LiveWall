@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>app.ico</ApplicationIcon>
+    <AssemblyName>LiveWall</AssemblyName>
+    <RootNamespace>LiveWall</RootNamespace>
+    <Nullable>enable</Nullable>
+    <LangVersion>12</LangVersion>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <Version>1.0.0</Version>
+    <AssemblyTitle>LiveWall</AssemblyTitle>
+    <Product>LiveWall</Product>
+    <Description>Lightweight animated desktop wallpaper host: per-monitor images, slideshows and videos that pause when a monitor is covered.</Description>
+  </PropertyGroup>
+
+  <!-- Build fingerprint for crash.log ("build: <sha>") - GITHUB_SHA is set only on CI builds. -->
+  <Target Name="WriteBuildInfo" AfterTargets="PrepareForBuild">
+    <WriteLinesToFile File="$(IntermediateOutputPath)BuildInfo.g.cs"
+                      Lines="namespace LiveWall { internal static class BuildInfo { public const string Sha = &quot;$(GITHUB_SHA)&quot;%3B } }"
+                      Overwrite="true" />
+    <ItemGroup>
+      <Compile Include="$(IntermediateOutputPath)BuildInfo.g.cs" />
+    </ItemGroup>
+  </Target>
+
+</Project>
