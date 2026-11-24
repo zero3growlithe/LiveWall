@@ -52,6 +52,17 @@ lets every monitor have its own wallpaper, and automatically pauses playback whi
 | `Skip to the next picture / video` | Steps a slideshow or video folder forward at once. |
 | `Wallpaper scale` | `pixels as DIPs (no DPI adjustment)` is the default and the setting that draws 1:1 on a 100 % display. |
 
+## Memory
+
+The renderer keeps **one** decoded frame buffer, one crop buffer and a pair of image buffers per monitor and
+re-uses them. That matters at 4K: a frame is 33 MB, so allocating a fresh one per video frame or per slide
+would hand the large object heap gigabytes of garbage a minute and the process would climb without settling.
+Slideshow advances additionally ask the runtime to compact the large object heap once, which is what returns
+the previous picture to Windows. The settings window is only built when it is opened, so an autostart
+tray-only run does not pay for a WPF visual tree at all.
+`Diagnostics…` reports working set, private bytes, managed heap size and the three GC counters, so the
+footprint can be measured instead of felt.
+
 ## How it works
 
 1. `DesktopWindowService` sends `0x052C` to `Progman` and then detects which desktop layout the shell

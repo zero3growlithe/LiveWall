@@ -533,6 +533,7 @@ internal sealed class MediaFoundationVideo : IDisposable
         }
 
         _frameBuffer = Array.Empty<byte>();
+        _sourceBuffer = Array.Empty<byte>();
         Width = 0;
         Height = 0;
         Stride = 0;

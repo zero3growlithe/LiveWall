@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 using System.Threading;
@@ -662,6 +663,33 @@ public sealed class WallpaperEngine : IDisposable
     }
 
     /// <summary>Everything the diagnostics window shows, in one string.</summary>
+    /// <summary>
+    /// One line of memory facts: what the process holds, what the managed heap holds, and how much of it is on
+    /// the large object heap. Without it a report can only say "it feels heavy".
+    /// </summary>
+    private static string BuildMemoryReport()
+    {
+        try
+        {
+            Process process = Process.GetCurrentProcess();
+            GCMemoryInfo info = GC.GetGCMemoryInfo();
+            double managedMegabytes = info.HeapSizeBytes / (1024.0 * 1024.0);
+            return string.Format(
+                CultureInfo.InvariantCulture,
+                "memory: working set {0:F0} MB, private {1:F0} MB, managed heap {2:F1} MB, collections {3}/{4}/{5}",
+                Environment.WorkingSet / (1024.0 * 1024.0),
+                process.PrivateMemorySize64 / (1024.0 * 1024.0),
+                managedMegabytes,
+                GC.CollectionCount(0),
+                GC.CollectionCount(1),
+                GC.CollectionCount(2));
+        }
+        catch (Exception exception)
+        {
+            return "memory: unavailable (" + exception.Message + ")";
+        }
+    }
+
     public string BuildDiagnosticsReport()
     {
         StringBuilder builder = new StringBuilder();
@@ -677,6 +705,7 @@ public sealed class WallpaperEngine : IDisposable
         builder.AppendLine("desktop host client rect: " + _desktopWindowService.GetWorkerRectangle());
         builder.AppendLine("monitors: " + _monitors.Count.ToString(CultureInfo.InvariantCulture));
         builder.AppendLine("attach failures: " + _attachFailures.Count.ToString(CultureInfo.InvariantCulture));
+        builder.AppendLine(BuildMemoryReport());
         builder.AppendLine(string.Empty);
 
         for (int index = 0; index < _monitors.Count; index++)

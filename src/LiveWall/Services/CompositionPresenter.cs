@@ -53,6 +53,7 @@ internal sealed class CompositionPresenter : IDisposable
     private IDXGISwapChain1? _swapChain;
     private IDXGISwapChain1? _backgroundSwapChain;
     private ID3D11Texture2D? _uploadTexture;
+    private ID3D11Texture2D? _swapChainTexture;
     private byte _backgroundColorRed;
     private byte _backgroundColorGreen;
     private byte _backgroundColorBlue;
@@ -324,16 +325,11 @@ internal sealed class CompositionPresenter : IDisposable
         }
 
         EnsureSwapChain(width, height);
-        ID3D11Texture2D swapChainTexture = _swapChain!.GetBuffer<ID3D11Texture2D>(0);
-        try
-        {
-            _context.UpdateSubresource<byte>(pixels, _uploadTexture!, 0, (uint)(width * BytesPerPixel), 0, null);
-            _context.CopyResource(swapChainTexture, _uploadTexture!);
-        }
-        finally
-        {
-            swapChainTexture.Dispose();
-        }
+
+        // The back buffer is wrapped once per swapchain, not once per frame: GetBuffer creates a COM wrapper
+        // every call, which at 60 fps is pure garbage for no benefit.
+        _context.UpdateSubresource<byte>(pixels, _uploadTexture!, 0, (uint)(width * BytesPerPixel), 0, null);
+        _context.CopyResource(_swapChainTexture!, _uploadTexture!);
 
         if (_stretch != stretch || !_transformValid)
         {
@@ -373,6 +369,7 @@ internal sealed class CompositionPresenter : IDisposable
         using IDXGIAdapter adapter = _dxgiDevice!.GetAdapter();
         using IDXGIFactory2 factory = adapter.GetParent<IDXGIFactory2>();
         _swapChain = factory.CreateSwapChainForComposition(_device!, description, null!);
+        _swapChainTexture = _swapChain.GetBuffer<ID3D11Texture2D>(0);
 
         Texture2DDescription textureDescription = new Texture2DDescription(
             Format.B8G8R8A8_UNorm,
@@ -451,6 +448,12 @@ internal sealed class CompositionPresenter : IDisposable
 
     private void ReleaseSwapChain()
     {
+        if (_swapChainTexture != null)
+        {
+            _swapChainTexture.Dispose();
+            _swapChainTexture = null;
+        }
+
         if (_uploadTexture != null)
         {
             _uploadTexture.Dispose();

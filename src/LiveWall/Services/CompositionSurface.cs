@@ -102,6 +102,13 @@ public sealed class CompositionSurface : IWallpaperSurface
     private bool _contentBoxValid;
     private int _pendingBackgroundColour = -1;
     private VideoQueue? _videoQueue;
+
+    // Big pixel buffers are reused instead of re-allocated. A 4K frame is 33 MB, which lands on the large
+    // object heap; allocating a fresh one every frame or every slide is what made the app grow in RAM.
+    private byte[] _cropBuffer = Array.Empty<byte>();
+    private byte[] _imageBufferA = Array.Empty<byte>();
+    private byte[] _imageBufferB = Array.Empty<byte>();
+    private bool _imageBufferFlip;
     private int _appliedBackgroundColour = -1;
     private ContentBox _contentBox;
     private long _framesPresented;
@@ -306,6 +313,8 @@ public sealed class CompositionSurface : IWallpaperSurface
         _pendingBackgroundColour = (background.R << 16) | (background.G << 8) | background.B;
 
         _videoQueue = null;
+        _cropBuffer = Array.Empty<byte>();
+        RequestLargeObjectHeapCompaction();
 
         switch (_source.Kind)
         {
@@ -596,6 +605,9 @@ public sealed class CompositionSurface : IWallpaperSurface
 
         _playlistIndex = (_playlistIndex + 1) % _playlistFiles.Count;
         ShowCurrentSlide();
+
+        // The slide that just left the screen left a picture-sized hole on the large object heap.
+        RequestLargeObjectHeapCompaction();
     }
 
     private void ShowCurrentSlide()
@@ -626,7 +638,7 @@ public sealed class CompositionSurface : IWallpaperSurface
         AppLog.Write("could not decode a slideshow image " + filePath + ": " + failure);
     }
 
-    private static bool TryLoadImagePixels(string filePath, out byte[]? pixels, out int width, out int height, out string failure)
+    private bool TryLoadImagePixels(string filePath, out byte[]? pixels, out int width, out int height, out string failure)
     {
         pixels = null;
         width = 0;
@@ -649,11 +661,18 @@ public sealed class CompositionSurface : IWallpaperSurface
             image.EndInit();
             image.Freeze();
 
-            FormatConvertedBitmap converted = new FormatConvertedBitmap(image, PixelFormats.Bgra32, null, 0);
-            converted.Freeze();
+            // A format conversion holds a second full copy of the picture, so it is only created when the
+            // decoder really did hand back something other than BGRA.
+            BitmapSource source = image;
+            if (image.Format != PixelFormats.Bgra32)
+            {
+                FormatConvertedBitmap converted = new FormatConvertedBitmap(image, PixelFormats.Bgra32, null, 0);
+                converted.Freeze();
+                source = converted;
+            }
 
-            width = converted.PixelWidth;
-            height = converted.PixelHeight;
+            width = source.PixelWidth;
+            height = source.PixelHeight;
             if (width <= 0 || height <= 0)
             {
                 failure = "the image has no pixels";
@@ -661,8 +680,8 @@ public sealed class CompositionSurface : IWallpaperSurface
             }
 
             int stride = width * 4;
-            byte[] buffer = new byte[stride * height];
-            converted.CopyPixels(buffer, stride, 0);
+            byte[] buffer = RentImageBuffer(stride * height);
+            source.CopyPixels(buffer, stride, 0);
             pixels = buffer;
             return true;
         }
@@ -670,6 +689,49 @@ public sealed class CompositionSurface : IWallpaperSurface
         {
             failure = exception.Message;
             return false;
+        }
+    }
+
+    /// <summary>
+    /// Hands out one of two reusable image buffers, grown only when a picture needs more room. Two buffers are
+    /// kept so the array the render thread is still presenting is never overwritten while the next slide is
+    /// decoded.
+    /// </summary>
+    private byte[] RentImageBuffer(int length)
+    {
+        _imageBufferFlip = !_imageBufferFlip;
+        byte[] buffer = _imageBufferFlip ? _imageBufferA : _imageBufferB;
+        if (buffer.Length < length)
+        {
+            buffer = new byte[length];
+        }
+
+        if (_imageBufferFlip)
+        {
+            _imageBufferA = buffer;
+        }
+        else
+        {
+            _imageBufferB = buffer;
+        }
+
+        return buffer;
+    }
+
+    /// <summary>
+    /// Asks the next garbage collection to compact the large object heap, which is what gives a 33 MB picture
+    /// back to the operating system after the wallpaper moved on. The collection itself is left to the runtime.
+    /// </summary>
+    private static void RequestLargeObjectHeapCompaction()
+    {
+        try
+        {
+            System.Runtime.GCSettings.LargeObjectHeapCompactionMode =
+                System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
+        }
+        catch (Exception)
+        {
+            // A platform that does not support it is not a reason to fail.
         }
     }
 
@@ -1087,20 +1149,28 @@ public sealed class CompositionSurface : IWallpaperSurface
         return true;
     }
 
-    /// <summary>Copies the given rectangle of a frame into a fresh packed BGRA buffer.</summary>
-    private static byte[] CropToBox(byte[] pixels, int width, ContentBox box)
+    /// <summary>
+    /// Copies the given rectangle of a frame into the reusable crop buffer. Reusing it matters: this runs for
+    /// every single frame of a letterboxed video, and a fresh 33 MB array per frame is exactly the kind of
+    /// garbage that makes a wallpaper app grow to hundreds of megabytes.
+    /// </summary>
+    private byte[] CropToBox(byte[] pixels, int width, ContentBox box)
     {
         int sourceRowBytes = width * 4;
         int targetRowBytes = box.Width * 4;
-        byte[] cropped = new byte[box.Height * targetRowBytes];
+        int length = box.Height * targetRowBytes;
+        if (_cropBuffer.Length < length)
+        {
+            _cropBuffer = new byte[length];
+        }
 
         for (int row = 0; row < box.Height; row++)
         {
             int sourceOffset = ((box.Top + row) * sourceRowBytes) + (box.Left * 4);
-            Buffer.BlockCopy(pixels, sourceOffset, cropped, row * targetRowBytes, targetRowBytes);
+            Buffer.BlockCopy(pixels, sourceOffset, _cropBuffer, row * targetRowBytes, targetRowBytes);
         }
 
-        return cropped;
+        return _cropBuffer;
     }
 
     private void ReportContentBox(MediaFoundationVideo video, ContentBox box)
@@ -1245,6 +1315,9 @@ public sealed class CompositionSurface : IWallpaperSurface
         }
 
         _renderThreadAlive = false;
+        _cropBuffer = Array.Empty<byte>();
+        _imageBufferA = Array.Empty<byte>();
+        _imageBufferB = Array.Empty<byte>();
         DisposeWindow();
     }
 

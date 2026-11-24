@@ -75,14 +75,12 @@ public partial class App : Application
             SettingsService.Save(_settings);
         }
 
-        _mainWindow = new MainWindow(_engine, _settings);
-        MainWindow = _mainWindow;
-
         bool startedFromAutostart = Array.IndexOf(e.Args, "--tray") >= 0;
         bool showWindow = firstRun || !startedFromAutostart || !_settings.StartMinimized;
         if (showWindow)
         {
-            _mainWindow.Show();
+            EnsureMainWindow();
+            _mainWindow!.Show();
             _mainWindow.Activate();
         }
 
@@ -239,8 +237,24 @@ public partial class App : Application
         }
     }
 
+    /// <summary>
+    /// Builds the settings window the first time it is actually wanted. A tray-only start has no window at all:
+    /// a WPF window and its visual tree cost tens of megabytes, and the wallpaper itself never needs it.
+    /// </summary>
+    private void EnsureMainWindow()
+    {
+        if (_mainWindow != null || _engine == null || _settings == null)
+        {
+            return;
+        }
+
+        _mainWindow = new MainWindow(_engine, _settings);
+        MainWindow = _mainWindow;
+    }
+
     private void TrayIcon_ShowSettingsRequested(object? sender, EventArgs e)
     {
+        EnsureMainWindow();
         if (_mainWindow == null)
         {
             return;
