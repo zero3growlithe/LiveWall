@@ -25,6 +25,7 @@ internal sealed class MediaFoundationVideo : IDisposable
     private static readonly Guid EnableVideoProcessingKey = new Guid("fb394f3d-ccf1-42ee-bbb3-f9b845d5681d");
     private static readonly Guid MediaTypeDefaultStrideKey = new Guid("644b4e48-1e02-4516-b0eb-c01ca9d49ac6");
     private static readonly Guid MediaTypeInterlaceModeKey = new Guid("e2724bb8-e676-4806-b4b2-a8d6efb44ccd");
+    private static readonly Guid MediaTypeFrameRateKey = new Guid("c459a2e8-3d2c-4e44-b132-fee5156c7bb0");
 
     private static readonly Guid MediaTypeVideoGuid = new Guid("73646976-0000-0010-8000-00aa00389b71");
     private static readonly Guid VideoFormatRgb32Guid = new Guid("00000016-0000-0010-8000-00aa00389b71");
@@ -53,6 +54,7 @@ internal sealed class MediaFoundationVideo : IDisposable
 
     private IMFSourceReader? _reader;
     private IMFAttributes? _readerAttributes;
+    private IMFDXGIDeviceManager? _deviceManager;
     private byte[] _frameBuffer = Array.Empty<byte>();
     private byte[] _sourceBuffer = Array.Empty<byte>();
     private VideoPixelLayout _pixelLayout = VideoPixelLayout.Bgra;
@@ -107,9 +109,31 @@ internal sealed class MediaFoundationVideo : IDisposable
     /// would otherwise insert; when the decoder offers nothing LiveWall can convert, the call repeats itself
     /// with the safe RGB request instead of failing.
     /// </summary>
-    public bool Open(string path, LiveWall.Models.VideoPixelMode pixelMode)
+    /// <summary>True when the frames come out of a hardware (DXVA) decoder rather than the software one.</summary>
+    public bool UsesHardwareDecoder { get; private set; }
+
+    /// <summary>
+    /// Opens the file with the cheapest stack that actually works: hardware decoding first (the graphics card
+    /// is idle while the CPU does all the work), then software, then the decoder's own RGB conversion.
+    /// </summary>
+    public bool Open(
+        string path,
+        LiveWall.Models.VideoPixelMode pixelMode,
+        IUnknown? decoderDevice,
+        bool allowHardwareDecoding)
     {
-        if (OpenCore(path, pixelMode))
+        if (allowHardwareDecoding && decoderDevice != null && OpenCore(path, pixelMode, decoderDevice))
+        {
+            return true;
+        }
+
+        if (allowHardwareDecoding && decoderDevice != null)
+        {
+            AppLog.Write("hardware decoding is not usable for " + path + " (" + FailureReason
+                + ") — decoding on the CPU instead");
+        }
+
+        if (OpenCore(path, pixelMode, null))
         {
             return true;
         }
@@ -121,10 +145,10 @@ internal sealed class MediaFoundationVideo : IDisposable
 
         AppLog.Write("colour conversion in LiveWall failed for " + path + " (" + FailureReason
             + ") — falling back to the decoder's own RGB conversion");
-        return OpenCore(path, LiveWall.Models.VideoPixelMode.DecoderConvertsToRgb);
+        return OpenCore(path, LiveWall.Models.VideoPixelMode.DecoderConvertsToRgb, null);
     }
 
-    private bool OpenCore(string path, LiveWall.Models.VideoPixelMode pixelMode)
+    private bool OpenCore(string path, LiveWall.Models.VideoPixelMode pixelMode, IUnknown? decoderDevice)
     {
         Close();
 
@@ -133,8 +157,21 @@ internal sealed class MediaFoundationVideo : IDisposable
             EnsureMediaFoundationStarted();
 
             bool askForRgb = pixelMode == LiveWall.Models.VideoPixelMode.DecoderConvertsToRgb;
-            _readerAttributes = MediaFactory.MFCreateAttributes(2);
+            _readerAttributes = MediaFactory.MFCreateAttributes(decoderDevice != null ? 4 : 2);
             _readerAttributes.Set(EnableVideoProcessingKey, askForRgb ? 1u : 0u);
+
+            if (decoderDevice != null)
+            {
+                // A DXGI device manager is what tells Media Foundation to decode on the graphics card. The
+                // advanced video processing flag lets the video processor convert and copy the hardware frame
+                // back to a normal memory buffer, which is all the wallpaper needs.
+                IMFDXGIDeviceManager deviceManager;
+                MediaFactory.MFCreateDXGIDeviceManager(out uint resetToken, out deviceManager);
+                _deviceManager = deviceManager;
+                _deviceManager.ResetDevice(decoderDevice, resetToken);
+                _readerAttributes.Set(SourceReaderAttributeKeys.D3DManager, _deviceManager);
+                _readerAttributes.Set(SourceReaderAttributeKeys.EnableAdvancedVideoProcessing, 1u);
+            }
 
             _reader = MediaFactory.MFCreateSourceReaderFromURL(path, _readerAttributes);
             _reader.SetStreamSelection(SourceReaderIndex.AllStreams, false);
@@ -207,16 +244,35 @@ internal sealed class MediaFoundationVideo : IDisposable
 
             _frameBuffer = new byte[Width * Height * 4];
             FailureReason = string.Empty;
+
+            if (decoderDevice != null)
+            {
+                // Hardware decoding is only worth having if its frames can actually be read. One real frame is
+                // pulled and the stream is rewound, so a decoder that hands back GPU-only surfaces is caught
+                // here instead of showing a frozen wallpaper.
+                byte[]? probe = ReadFrame(out long probeTime);
+                if (probe == null && probeTime >= 0)
+                {
+                    FailureReason = "the hardware decoder produced no readable frame";
+                    Close();
+                    return false;
+                }
+
+                _reader.SetCurrentPosition(0);
+                UsesHardwareDecoder = true;
+            }
             AppLog.Write(string.Format(
                 CultureInfo.InvariantCulture,
-                "video media type: {0}x{1} (frame size 0x{2:X8}), {3}, stride {4}{5}, interlace mode {6}",
+                "video media type: {0}x{1} (frame size 0x{2:X8}), {3}, stride {4}{5}, interlace mode {6}, {7} fps, decoder {8}",
                 Width,
                 Height,
                 packedFrameSize,
                 _pixelLayout,
                 Stride,
                 Stride < 0 ? " (bottom-up)" : string.Empty,
-                ReadInterlaceMode(currentAttributes)));
+                ReadInterlaceMode(currentAttributes),
+                ReadFrameRate(currentAttributes),
+                UsesHardwareDecoder ? "hardware" : "software"));
             return true;
         }
         catch (Exception exception)
@@ -238,6 +294,30 @@ internal sealed class MediaFoundationVideo : IDisposable
         catch (Exception)
         {
             return 0;
+        }
+    }
+
+    /// <summary>
+    /// The file's own frame rate. It explains the decode figures in the diagnostics: a 60 fps clip is decoded
+    /// 60 times a second whether or not every frame is shown.
+    /// </summary>
+    private static string ReadFrameRate(IMFAttributes attributes)
+    {
+        try
+        {
+            ulong packed = attributes.GetUInt64(MediaTypeFrameRateKey);
+            uint numerator = (uint)(packed >> 32);
+            uint denominator = (uint)(packed & 0xFFFFFFFFUL);
+            if (numerator == 0 || denominator == 0)
+            {
+                return "unknown";
+            }
+
+            return (numerator / (double)denominator).ToString("F1", CultureInfo.InvariantCulture);
+        }
+        catch (Exception)
+        {
+            return "unknown";
         }
     }
 
@@ -561,6 +641,13 @@ internal sealed class MediaFoundationVideo : IDisposable
             _readerAttributes = null;
         }
 
+        if (_deviceManager != null)
+        {
+            _deviceManager.Dispose();
+            _deviceManager = null;
+        }
+
+        UsesHardwareDecoder = false;
         _frameBuffer = Array.Empty<byte>();
         _sourceBuffer = Array.Empty<byte>();
         Width = 0;

@@ -130,6 +130,8 @@
                                 <ComboBoxItem Content="60 fps" Tag="60" />
                                 <ComboBoxItem Content="Every decoded frame (most CPU)" Tag="0" />
                             </ComboBox>
+                            <CheckBox x:Name="VideoHardwareCheckBox" Content="Decode on the graphics card (DXVA)"
+                                      Margin="0,8,0,0" Checked="EditorOption_Changed" Unchecked="EditorOption_Changed" />
                             <CheckBox x:Name="VideoConvertCheckBox" Content="Convert colours in LiveWall (skips the codec's converter)"
                                       Margin="0,8,0,0" Checked="EditorOption_Changed" Unchecked="EditorOption_Changed" />
                         </StackPanel>

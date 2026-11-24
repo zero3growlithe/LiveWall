@@ -60,6 +60,10 @@ frame. Two settings keep it in check, both in the `VIDEO` block:
 
 - **Frame rate** — `30 fps` by default. Every decoded frame still costs its decode, but only the ones that
   are actually shown cost an upload and a present, so a 60 fps clip costs half of that half.
+- **Decode on the graphics card (DXVA)** — on by default. The graphics card is idle while the CPU does all
+  the decoding, so the decoder is created against the Direct3D device the renderer already owns. Before the
+  decoder is trusted, one real frame is pulled and the stream rewound: a card or driver that hands back
+  GPU-only surfaces is caught there and the software decoder takes over, logging why.
 - **Convert colours in LiveWall** — off by default. When on, LiveWall asks the decoder for its native NV12
   output and converts it itself, which removes Media Foundation's video-processor stage from the graph. If
   the decoder offers nothing convertible, LiveWall logs the fallback and goes back to RGB by itself.

@@ -34,6 +34,12 @@ public sealed class WallpaperSource
     /// <summary>Who converts the decoded frame to RGB (see <see cref="VideoPixelMode"/>).</summary>
     public VideoPixelMode VideoPixelMode { get; set; } = VideoPixelMode.DecoderConvertsToRgb;
 
+    /// <summary>
+    /// Decode on the graphics card (DXVA) instead of the CPU. Falls back to the software decoder by itself when
+    /// the card or the driver cannot produce frames LiveWall can read.
+    /// </summary>
+    public bool UseHardwareDecoding { get; set; } = true;
+
     public WallpaperStretch Stretch { get; set; } = WallpaperStretch.Fill;
 
     public string BackgroundColor { get; set; } = "#000000";

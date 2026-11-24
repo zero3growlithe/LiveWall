@@ -120,6 +120,8 @@ public sealed class CompositionSurface : IWallpaperSurface
     private string _videoCostDescription = "not measured";
     private int _videoFrameRateLimit = 30;
     private VideoPixelMode _videoPixelMode = VideoPixelMode.DecoderConvertsToRgb;
+    private bool _useHardwareDecoding = true;
+    private bool _hardwareDecoderActive;
     private string? _resumeVideoPath;
     private int _appliedBackgroundColour = -1;
     private ContentBox _contentBox;
@@ -328,6 +330,7 @@ public sealed class CompositionSurface : IWallpaperSurface
         _cropBuffer = Array.Empty<byte>();
         _videoFrameRateLimit = _source.VideoFrameRateLimit;
         _videoPixelMode = _source.VideoPixelMode;
+        _useHardwareDecoding = _source.UseHardwareDecoding;
         lock (_sync)
         {
             _resumeVideoPath = null;
@@ -432,6 +435,7 @@ public sealed class CompositionSurface : IWallpaperSurface
             _framesPresented,
             _hostDescription,
             _description)
+            + " | decoder=" + (_hardwareDecoderActive ? "hardware" : "software")
             + " | video cost=" + _videoCostDescription;
     }
 
@@ -833,9 +837,14 @@ public sealed class CompositionSurface : IWallpaperSurface
                     else
                     {
                         MediaFoundationVideo candidate = new MediaFoundationVideo();
-                        if (candidate.Open(videoCommand.FilePath, _videoPixelMode))
+                        if (candidate.Open(
+                            videoCommand.FilePath,
+                            _videoPixelMode,
+                            presenter.DecoderDevice,
+                            _useHardwareDecoding))
                         {
                             video = candidate;
+                            _hardwareDecoderActive = candidate.UsesHardwareDecoder;
                             currentVideoPath = videoCommand.FilePath;
                             pausedSinceTimestamp = 0;
                             lastPresentTimestamp = 0;
@@ -1362,7 +1371,7 @@ public sealed class CompositionSurface : IWallpaperSurface
         double framesPerSecond = frameMilliseconds > 0 ? 1000.0 / frameMilliseconds : 0.0;
         _videoCostDescription = string.Format(
             CultureInfo.InvariantCulture,
-            "{0:F1} fps, decode {1:F1} ms + present {2:F1} ms per frame, {3:F1}% of one core",
+            "{0:F1} fps, decode {1:F1} ms + present {2:F1} ms per frame = {3:F1}% of one core of wall time",
             framesPerSecond,
             decodeMilliseconds,
             presentMilliseconds,
@@ -1394,6 +1403,7 @@ public sealed class CompositionSurface : IWallpaperSurface
         video.Dispose();
         video = null;
         _isVideoOpen = false;
+        _hardwareDecoderActive = false;
     }
 
     // ── Teardown ──────────────────────────────────────────────────────────────────────────────────────────

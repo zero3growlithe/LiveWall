@@ -71,6 +71,15 @@ internal sealed class CompositionPresenter : IDisposable
     private double _lastScaleY = 1.0;
 
     /// <summary>Which GPU/D3D feature level the presenter ended up with, for the diagnostics report.</summary>
+    /// <summary>
+    /// The Direct3D device, handed to the video decoder so Media Foundation can decode on the graphics card
+    /// instead of the CPU. Null until <see cref="Initialize"/> has run.
+    /// </summary>
+    public SharpGen.Runtime.IUnknown? DecoderDevice
+    {
+        get { return _device; }
+    }
+
     public string DeviceDescription
     {
         get { return _deviceDescription; }

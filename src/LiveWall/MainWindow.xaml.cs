@@ -221,6 +221,7 @@ public partial class MainWindow : Window
             SelectComboItemByTag(VideoOrderComboBox, source.VideoOrder.ToString());
             SelectComboItemByTag(VideoFrameRateComboBox, source.VideoFrameRateLimit.ToString(CultureInfo.InvariantCulture));
             VideoConvertCheckBox.IsChecked = source.VideoPixelMode == VideoPixelMode.ConvertInApp;
+            VideoHardwareCheckBox.IsChecked = source.UseHardwareDecoding;
             IntervalSlider.Value = source.SlideshowIntervalSeconds;
             MuteCheckBox.IsChecked = source.MuteVideo;
             VolumeSlider.Value = source.VideoVolume;
@@ -260,6 +261,7 @@ public partial class MainWindow : Window
         source.VideoPixelMode = VideoConvertCheckBox.IsChecked == true
             ? VideoPixelMode.ConvertInApp
             : VideoPixelMode.DecoderConvertsToRgb;
+        source.UseHardwareDecoding = VideoHardwareCheckBox.IsChecked == true;
 
         source.BackgroundColor = string.IsNullOrWhiteSpace(ColorTextBox.Text) ? "#000000" : ColorTextBox.Text.Trim();
         source.IncludeSubfolders = kind == WallpaperKind.VideoFolder
