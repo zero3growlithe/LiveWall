@@ -1,7 +1,10 @@
 using System;
 using System.IO;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Interop;
+using System.Windows.Media;
 using LiveWall.Models;
 using LiveWall.Services;
 
@@ -37,6 +40,13 @@ public partial class App : Application
         bool firstRun = !File.Exists(AppLog.SettingsPath);
         _settings = SettingsService.Load();
 
+        if (_settings.RenderMode == RenderModePreference.Software)
+        {
+            // Must happen before any window exists: WPF decides the render path per window at creation.
+            RenderOptions.ProcessRenderMode = RenderMode.SoftwareOnly;
+            AppLog.Write("software rendering requested by the settings");
+        }
+
         _engine = new WallpaperEngine();
         _engine.StatusChanged += Engine_StatusChanged;
 
@@ -68,6 +78,40 @@ public partial class App : Application
         }
 
         UpdateTrayStatus();
+
+        if (_settings.StartAutomatically && string.IsNullOrEmpty(_settings.CompositionCheckResult))
+        {
+            RunStartupCompositionCheck();
+        }
+    }
+
+    /// <summary>
+    /// Runs once, the first time the wallpaper is drawn: it proves whether pixels really reach the desktop and
+    /// records the answer in the log, so an "I see nothing" report comes with evidence attached.
+    /// </summary>
+    private async void RunStartupCompositionCheck()
+    {
+        try
+        {
+            await Task.Delay(1600);
+            if (_engine == null || _settings == null)
+            {
+                return;
+            }
+
+            string result = await _engine.RunCompositionCheckAsync();
+            _settings.CompositionCheckResult = result;
+            SettingsService.Save(_settings);
+            AppLog.Write("composition check: " + result.Replace(Environment.NewLine, " | "));
+            if (_mainWindow != null)
+            {
+                _mainWindow.RefreshFromEngine();
+            }
+        }
+        catch (Exception exception)
+        {
+            AppLog.WriteException("the startup composition check failed", exception);
+        }
     }
 
     private void Engine_StatusChanged(object? sender, EventArgs e)

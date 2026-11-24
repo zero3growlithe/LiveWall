@@ -66,6 +66,7 @@ public partial class MainWindow : Window
             PauseFullscreenCheckBox.IsChecked = _settings.PauseWhenFullscreen;
             StartMinimizedCheckBox.IsChecked = _settings.StartMinimized;
             StartWithWindowsCheckBox.IsChecked = StartupService.IsRegistered();
+            SoftwareRenderingCheckBox.IsChecked = _settings.RenderMode == RenderModePreference.Software;
         }
         finally
         {
@@ -367,8 +368,9 @@ public partial class MainWindow : Window
 
     private void Apply_Click(object sender, RoutedEventArgs e)
     {
-        SaveEditor();
         _settings.SameForAllMonitors = SameForAllCheckBox.IsChecked == true;
+        _settings.RenderMode = SoftwareRenderingCheckBox.IsChecked == true ? RenderModePreference.Software : RenderModePreference.Hardware;
+        SaveEditor();
         _settings.PauseWhenMaximized = PauseMaximizedCheckBox.IsChecked == true;
         _settings.PauseWhenFullscreen = PauseFullscreenCheckBox.IsChecked == true;
         _settings.StartMinimized = StartMinimizedCheckBox.IsChecked == true;
@@ -451,6 +453,67 @@ public partial class MainWindow : Window
     private void MuteCheckBox_Changed(object sender, RoutedEventArgs e)
     {
         ApplyEditorChanges();
+    }
+
+    private void SoftwareRenderingCheckBox_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_suppressEditorEvents)
+        {
+            return;
+        }
+
+        _settings.RenderMode = SoftwareRenderingCheckBox.IsChecked == true ? RenderModePreference.Software : RenderModePreference.Hardware;
+        SettingsService.Save(_settings);
+    }
+
+    /// <summary>Re-launches the app so a render-mode change takes effect (the mode is fixed per process).</summary>
+    private void Restart_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            _settings.RenderMode = SoftwareRenderingCheckBox.IsChecked == true ? RenderModePreference.Software : RenderModePreference.Hardware;
+            SettingsService.Save(_settings);
+            SaveWindowPlacement();
+
+            Process current = Process.GetCurrentProcess();
+            string executablePath = current.MainModule == null ? string.Empty : current.MainModule.FileName;
+            if (string.IsNullOrEmpty(executablePath))
+            {
+                return;
+            }
+
+            // The new instance waits for this process to exit, otherwise the single-instance mutex turns it away.
+            ProcessStartInfo startInfo = new ProcessStartInfo("cmd.exe", "/c timeout /t 1 >nul & start \"\" \"" + executablePath + "\"");
+            startInfo.CreateNoWindow = true;
+            startInfo.UseShellExecute = false;
+            Process.Start(startInfo);
+
+            _exitRequested = true;
+            Application.Current.Shutdown();
+        }
+        catch (Exception exception)
+        {
+            AppLog.WriteException("restarting LiveWall failed", exception);
+        }
+    }
+
+    private async void Recheck_Click(object sender, RoutedEventArgs e)
+    {
+        string result;
+        try
+        {
+            result = await _engine.RunCompositionCheckAsync();
+        }
+        catch (Exception exception)
+        {
+            AppLog.WriteException("the composition check failed", exception);
+            result = "The check failed: " + exception.Message;
+        }
+
+        _settings.CompositionCheckResult = result;
+        SettingsService.Save(_settings);
+        UpdateStatuses();
+        MessageBox.Show(this, result, "What the desktop shows", MessageBoxButton.OK, MessageBoxImage.Information);
     }
 
     private void Diagnostics_Click(object sender, RoutedEventArgs e)

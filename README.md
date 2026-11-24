@@ -44,12 +44,15 @@ lets every monitor have its own wallpaper, and automatically pauses playback whi
    currently exposes, because the two are not interchangeable:
    - **classic** (Windows 10, 11 up to 23H2): the icons move into a top-level `WorkerW` and an empty
      top-level `WorkerW` appears behind them — that one becomes the parent;
-   - **raised desktop** (Windows 11 24H2+, build 26100+): the icons stay inside `Progman`, a `WorkerW`
-     child of `Progman` paints the wallpaper, and `Progman` is created with `WS_EX_NOREDIRECTIONBITMAP`.
-     The surface is then parented to `Progman`, slotted directly below `SHELLDLL_DefView`, pushed onto
-     the shell's `WorkerW`, and made a **layered** child — without that the shell never composes it;
-     `SHELLDLL_DefView` is then hidden/re-shown once so the shell drops the icon-layer snapshot it
-     caches across desktop switches.
+   - **raised desktop** (Windows 11 24H2+, build 26100+): the icons stay inside `Progman`, the wallpaper is
+     painted by a `WorkerW` **child** of `Progman`, and `Progman` itself is created with
+     `WS_EX_NOREDIRECTIONBITMAP` — there is no surface behind it, so anything parented into `Progman`
+     paints into nothing and gets no error. Following Microsoft's guidance for these builds, the surface
+     is parented into that `WorkerW` child (falling back to `Progman` + directly below `SHELLDLL_DefView`
+     when the shell has not created it yet), made a **layered** child with `SetLayeredWindowAttributes`
+     at alpha 255, and `SHELLDLL_DefView` is hidden/re-shown once so the shell drops the icon-layer
+     snapshot it caches across desktop switches. When the `WorkerW` appears later, the surfaces are
+     re-attached into it automatically.
 2. One `WallpaperSurface` (an `HwndSource` holding a `Grid` with a `Border` backdrop, two `Image` layers
    and a video `Rectangle`) is made a child of that host per monitor — `GWL_STYLE` to
    `WS_CHILD | WS_VISIBLE` FIRST, then `SetParent`, then `SetWindowPos` with the host's z-order anchor —
@@ -85,9 +88,13 @@ artifact.
   line: `opening…`, `playing (1920x1080, muted, looping)`, or `playback failed: <reason>`.
 - Changing anything in the editor (source kind, file, folder, colour, scaling, mute) is applied
   immediately; `Apply` only exists for the settings that are not part of the editor.
-- Windows 11 24H2/25H2 block ordinary child windows from being composed under the desktop. The app
-  handles that topology, and `Diagnostics…` → **Test visibility** proves whether pixels really reach the
-  screen: it paints magenta, samples the monitor back and reports `VISIBLE` / `NOT VISIBLE` per display.
+- Windows 11 24H2/25H2 (build 26100+, including 26200) block ordinary child windows from being composed
+  under the desktop. The app handles that topology, and **Compatibility → `Check what the desktop shows`**
+  (also run automatically once on first launch) proves whether pixels really reach the screen: it paints
+  magenta, samples the monitor back and reports `VISIBLE` / `NOT VISIBLE` per display.
+- If that check says `NOT VISIBLE`, tick **Compatibility → `Use software rendering`** and press
+  `Restart LiveWall`: the hardware path never lands in the shell's composition tree on some builds, while
+  the GDI path does.
 - The desktop remains fully interactive: the surfaces never take focus, clicks or Alt+Tab slots.
 - Diagnostics: `%LocalAppData%\LiveWall\crash.log` (attach failures, Explorer restarts, media errors).
   An attach failure names the host window class and the exact Win32 error `SetParent` returned.

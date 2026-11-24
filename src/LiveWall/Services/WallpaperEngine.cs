@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Threading;
 using LiveWall.Models;
 
@@ -19,6 +20,7 @@ namespace LiveWall.Services;
 public sealed class WallpaperEngine : IDisposable
 {
     private const int WatchIntervalMilliseconds = 500;
+    private const string CompositionTestColour = "#FF00FF";
     private const int FailingRebuildThreshold = 3;
 
     private static readonly TimeSpan MinimumRetryInterval = TimeSpan.FromSeconds(5);
@@ -577,12 +579,56 @@ public sealed class WallpaperEngine : IDisposable
         RaiseStatusChanged();
     }
 
+    /// <summary>
+    /// Paints magenta for a moment, reads the screen back and restores the wallpaper. This is the only way to
+    /// tell "the shell is not composing our window" apart from "wrong z-order or position": a monitor covered
+    /// by a maximized window is skipped, because the sample would read that window instead of the desktop.
+    /// </summary>
+    public async Task<string> RunCompositionCheckAsync()
+    {
+        if (!_isRunning || _surfaces.Count == 0)
+        {
+            return "not run — the engine is not drawing anything yet";
+        }
+
+        try
+        {
+            ApplyTestColour(CompositionTestColour);
+            await Task.Delay(700);
+
+            List<string> lines = new List<string>();
+            for (int index = 0; index < _monitors.Count; index++)
+            {
+                MonitorDescriptor monitor = _monitors[index];
+                string label = "Display " + (monitor.Index + 1).ToString(CultureInfo.InvariantCulture);
+
+                if (_pauseReasons.ContainsKey(monitor.DeviceName))
+                {
+                    lines.Add(label + ": skipped (a window covers this monitor right now)");
+                    continue;
+                }
+
+                string detail;
+                bool visible = DesktopProbe.Matches(monitor.MonitorRectangle, 255, 0, 255, 30, out detail);
+                lines.Add(label + ": " + (visible ? "wallpaper VISIBLE" : "wallpaper NOT VISIBLE") + " — " + detail);
+            }
+
+            return string.Join(Environment.NewLine, lines);
+        }
+        finally
+        {
+            RestoreConfiguredSources();
+        }
+    }
+
     /// <summary>Everything the diagnostics window shows, in one string.</summary>
     public string BuildDiagnosticsReport()
     {
         StringBuilder builder = new StringBuilder();
         builder.AppendLine("LiveWall diagnostics");
         builder.AppendLine("engine running: " + (_isRunning ? "yes" : "no") + (IsManualPause ? " (manually paused)" : string.Empty));
+        builder.AppendLine("render mode: " + (_settings.RenderMode == RenderModePreference.Software ? "software (GDI)" : "hardware"));
+        builder.AppendLine("composition check: " + (string.IsNullOrEmpty(_settings.CompositionCheckResult) ? "not run yet" : _settings.CompositionCheckResult.Replace(Environment.NewLine, " | ")));
         builder.AppendLine("desktop host: " + _desktopWindowService.Host.Describe());
         builder.AppendLine("desktop host alive: " + (_desktopWindowService.IsAlive ? "yes" : "no"));
         builder.AppendLine("desktop host client rect: " + _desktopWindowService.GetWorkerRectangle());

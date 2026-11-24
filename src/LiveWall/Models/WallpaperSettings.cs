@@ -28,6 +28,16 @@ public sealed class WallpaperSettings
 
     public bool StartWithWindows { get; set; }
 
+    /// <summary>
+    /// Which WPF render mode the wallpaper surfaces use. Software rendering goes through GDI, which is what
+    /// the "raised desktop" (Windows 11 24H2+, build 26100+) composes for child windows on the builds where
+    /// the hardware path ends up invisible.
+    /// </summary>
+    public RenderModePreference RenderMode { get; set; } = RenderModePreference.Hardware;
+
+    /// <summary>Result of the last automatic composition check, or empty when it never ran.</summary>
+    public string CompositionCheckResult { get; set; } = string.Empty;
+
     // Saved settings-window placement, so the window reopens where it was left instead of centred.
     public double? WindowLeft { get; set; }
 
@@ -37,9 +47,18 @@ public sealed class WallpaperSettings
 
     public double? WindowHeight { get; set; }
 
-    /// <summary>Wallpaper to use for a monitor (falls back to the shared definition).</summary>
+    /// <summary>
+    /// Wallpaper to use for a monitor. When <see cref="SameForAllMonitors"/> is on the shared definition wins
+    /// for every monitor, even if per-monitor entries exist from an earlier session — otherwise editing the
+    /// shared setup changed nothing on screen and every monitor had to be edited on its own.
+    /// </summary>
     public WallpaperSource SourceForMonitor(string deviceName)
     {
+        if (SameForAllMonitors)
+        {
+            return Shared;
+        }
+
         if (!string.IsNullOrEmpty(deviceName) && PerMonitor.ContainsKey(deviceName))
         {
             return PerMonitor[deviceName];

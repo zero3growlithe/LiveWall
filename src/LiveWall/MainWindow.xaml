@@ -126,6 +126,16 @@
                                   Checked="StartWithWindowsCheckBox_Changed" Unchecked="StartWithWindowsCheckBox_Changed" />
                         <CheckBox x:Name="StartMinimizedCheckBox" Content="Start hidden in the notification area" Margin="0,6,0,0" />
                         <Button Content="Open settings folder" HorizontalAlignment="Left" Width="176" Margin="0,12,0,0" Padding="8,4" Click="OpenFolder_Click" />
+
+                        <TextBlock Text="COMPATIBILITY" FontSize="11" FontWeight="SemiBold" Foreground="#6A6A75" Margin="0,16,0,6" />
+                        <CheckBox x:Name="SoftwareRenderingCheckBox" Content="Use software rendering"
+                                  Checked="SoftwareRenderingCheckBox_Changed" Unchecked="SoftwareRenderingCheckBox_Changed" />
+                        <TextBlock FontSize="11" Foreground="#6A6A75" TextWrapping="Wrap" Margin="0,4,0,0"
+                                   Text="Needed on the Windows 11 24H2+ builds where the hardware rendering path never reaches the desktop. Takes effect after a restart." />
+                        <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                            <Button Content="Restart LiveWall" Width="140" Padding="8,4" Click="Restart_Click" />
+                            <Button Content="Check what the desktop shows" Width="220" Margin="8,0,0,0" Padding="8,4" Click="Recheck_Click" />
+                        </StackPanel>
                     </StackPanel>
                 </ScrollViewer>
             </Border>

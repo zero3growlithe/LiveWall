@@ -44,7 +44,34 @@ public sealed class DesktopWindowService
 
     public bool IsAlive
     {
-        get { return !_host.IsEmpty && NativeMethods.IsWindow(_host.ParentWindow); }
+        get
+        {
+            if (_host.IsEmpty || !NativeMethods.IsWindow(_host.ParentWindow))
+            {
+                return false;
+            }
+
+            // The shell creates its wallpaper WorkerW lazily. When we had to fall back to Progman itself and
+            // that layer shows up later, report "not alive" so the engine re-resolves and moves the surfaces
+            // into the composed layer instead of staying stuck where nothing is drawn.
+            return !CanUpgradeToWorkerLayer();
+        }
+    }
+
+    private bool CanUpgradeToWorkerLayer()
+    {
+        if (_host.Topology != DesktopHostTopology.RaisedProgman || _host.ShellWorker != IntPtr.Zero)
+        {
+            return false;
+        }
+
+        IntPtr progmanWindow = NativeMethods.FindWindow("Progman", null);
+        if (progmanWindow == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        return NativeMethods.FindWindowEx(progmanWindow, IntPtr.Zero, "WorkerW", null) != IntPtr.Zero;
     }
 
     public bool EnsureWorkerWindow()
@@ -63,9 +90,15 @@ public sealed class DesktopWindowService
 
         if (_host.IsRaisedDesktop)
         {
-            // The shell paints the wallpaper in its own WorkerW child of Progman: keep that one at the very
-            // bottom so our surface sits above it, and nudge the icon host so its cached snapshot is dropped.
-            PushShellWorkerToBottom();
+            if (_host.ShellWorker != _host.ParentWindow)
+            {
+                // Parented into Progman itself: keep the shell's wallpaper WorkerW at the very bottom so our
+                // surface sits above it.
+                PushShellWorkerToBottom();
+            }
+
+            // The icon host caches a snapshot of the desktop from the last desktop switch and paints it over
+            // everything below the icons; re-showing it drops that snapshot.
             RefreshIconHost();
         }
 
@@ -116,15 +149,31 @@ public sealed class DesktopWindowService
         IntPtr defViewInProgman = NativeMethods.FindWindowEx(progmanWindow, IntPtr.Zero, "SHELLDLL_DefView", null);
         if (defViewInProgman != IntPtr.Zero)
         {
-            // Raised desktop: SHELLDLL_DefView never left Progman.
+            // Raised desktop: SHELLDLL_DefView never left Progman, and Progman has no redirection surface,
+            // so the only subtree that composes is the WorkerW child the shell created under the icons.
+            // Parent into THAT window (Microsoft's own guidance for 26100+), layered and opaque.
             IntPtr shellWorker = NativeMethods.FindWindowEx(progmanWindow, IntPtr.Zero, "WorkerW", null);
             bool noRedirectionBitmap = HasNoRedirectionBitmap(progmanWindow);
+
+            if (shellWorker != IntPtr.Zero)
+            {
+                return new DesktopHost(
+                    DesktopHostTopology.RaisedProgman,
+                    shellWorker,
+                    new IntPtr(NativeMethods.HWND_BOTTOM),
+                    defViewInProgman,
+                    shellWorker,
+                    true,
+                    noRedirectionBitmap);
+            }
+
+            // No wallpaper WorkerW yet: go straight into Progman, directly under the icon host.
             return new DesktopHost(
                 DesktopHostTopology.RaisedProgman,
                 progmanWindow,
                 defViewInProgman,
                 defViewInProgman,
-                shellWorker,
+                IntPtr.Zero,
                 true,
                 noRedirectionBitmap);
         }
