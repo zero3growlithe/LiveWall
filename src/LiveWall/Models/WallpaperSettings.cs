@@ -38,7 +38,7 @@ public sealed class WallpaperSettings
     /// How the DirectComposition visual reacts to the display scaling (see <see cref="WallpaperScaleMode"/>).
     /// Only used by the composition renderer.
     /// </summary>
-    public WallpaperScaleMode WallpaperScale { get; set; } = WallpaperScaleMode.MatchDisplayScaling;
+    public WallpaperScaleMode WallpaperScale { get; set; } = WallpaperScaleMode.Pixels;
 
     /// <summary>
     /// Which WPF render mode the WPF fallback surfaces use. Only consulted when

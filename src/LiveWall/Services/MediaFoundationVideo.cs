@@ -28,6 +28,24 @@ internal sealed class MediaFoundationVideo : IDisposable
 
     private static readonly Guid MediaTypeVideoGuid = new Guid("73646976-0000-0010-8000-00aa00389b71");
     private static readonly Guid VideoFormatRgb32Guid = new Guid("00000016-0000-0010-8000-00aa00389b71");
+    private static readonly Guid VideoFormatArgb32Guid = new Guid("00000015-0000-0010-8000-00aa00389b71");
+    private static readonly Guid VideoFormatNv12Guid = new Guid("3231564e-0000-0010-8000-00aa00389b71");
+    private static readonly Guid VideoFormatI420Guid = new Guid("30323449-0000-0010-8000-00aa00389b71");
+    private static readonly Guid VideoFormatYv12Guid = new Guid("32315659-0000-0010-8000-00aa00389b71");
+
+    /// <summary>
+    /// What the decoder actually handed back. Asking for RGB32 does not guarantee RGB32: a decoder without a
+    /// colour-conversion MFT keeps producing NV12, and those bytes read as BGRA look like a grey, smeared
+    /// picture with black bands and a green fringe where the chroma plane starts.
+    /// </summary>
+    private enum VideoPixelLayout
+    {
+        Bgra = 0,
+        Nv12 = 1,
+        I420 = 2,
+        Yv12 = 3,
+        Unsupported = 4,
+    }
 
     private static readonly object StartupLock = new object();
 
@@ -36,6 +54,8 @@ internal sealed class MediaFoundationVideo : IDisposable
     private IMFSourceReader? _reader;
     private IMFAttributes? _readerAttributes;
     private byte[] _frameBuffer = Array.Empty<byte>();
+    private byte[] _sourceBuffer = Array.Empty<byte>();
+    private VideoPixelLayout _pixelLayout = VideoPixelLayout.Bgra;
 
     public int Width { get; private set; }
 
@@ -96,6 +116,18 @@ internal sealed class MediaFoundationVideo : IDisposable
             _reader.SetStreamSelection(SourceReaderIndex.AllStreams, false);
             _reader.SetStreamSelection(SourceReaderIndex.FirstVideoStream, true);
 
+            // The processing flag is read from the reader's own attribute store, not from the store it was
+            // created with, so it is set on both.
+            try
+            {
+                using IMFAttributes readerStore = _reader.QueryInterface<IMFAttributes>();
+                readerStore.Set(EnableVideoProcessingKey, 1u);
+            }
+            catch (Exception exception)
+            {
+                AppLog.Write("could not enable video processing on the reader: " + exception.Message);
+            }
+
             using IMFMediaType outputType = MediaFactory.MFCreateMediaType();
             using IMFAttributes outputAttributes = outputType.QueryInterface<IMFAttributes>();
             outputAttributes.Set(MediaTypeMajorTypeKey, MediaTypeVideoGuid);
@@ -115,13 +147,24 @@ internal sealed class MediaFoundationVideo : IDisposable
                 return false;
             }
 
+            _pixelLayout = ReadPixelLayout(currentAttributes);
+            if (_pixelLayout == VideoPixelLayout.Unsupported)
+            {
+                FailureReason = "the decoder produced a pixel format LiveWall cannot show";
+                Close();
+                return false;
+            }
+
+            bool planarOrSemiPlanar = _pixelLayout != VideoPixelLayout.Bgra;
+            int minimumStride = planarOrSemiPlanar ? Width : Width * 4;
+
             Stride = ReadDefaultStride(currentAttributes);
             if (Stride == 0)
             {
-                Stride = Width * 4;
+                Stride = minimumStride;
             }
 
-            if (Math.Abs(Stride) < Width * 4)
+            if (Math.Abs(Stride) < minimumStride)
             {
                 FailureReason = "the decoder reported an unusable row pitch";
                 Close();
@@ -132,9 +175,10 @@ internal sealed class MediaFoundationVideo : IDisposable
             FailureReason = string.Empty;
             AppLog.Write(string.Format(
                 CultureInfo.InvariantCulture,
-                "video media type: {0}x{1}, stride {2}{3}, interlace mode {4}",
+                "video media type: {0}x{1}, {2}, stride {3}{4}, interlace mode {5}",
                 Width,
                 Height,
+                _pixelLayout,
                 Stride,
                 Stride < 0 ? " (bottom-up)" : string.Empty,
                 ReadInterlaceMode(currentAttributes)));
@@ -160,6 +204,43 @@ internal sealed class MediaFoundationVideo : IDisposable
         {
             return 0;
         }
+    }
+
+    /// <summary>Pixel format of the negotiation result, which is what the buffers really contain.</summary>
+    private static VideoPixelLayout ReadPixelLayout(IMFAttributes attributes)
+    {
+        Guid subtype;
+        try
+        {
+            subtype = attributes.GetGuid(MediaTypeSubTypeKey);
+        }
+        catch (Exception)
+        {
+            return VideoPixelLayout.Bgra;
+        }
+
+        if (subtype == VideoFormatRgb32Guid || subtype == VideoFormatArgb32Guid)
+        {
+            return VideoPixelLayout.Bgra;
+        }
+
+        if (subtype == VideoFormatNv12Guid)
+        {
+            return VideoPixelLayout.Nv12;
+        }
+
+        if (subtype == VideoFormatI420Guid)
+        {
+            return VideoPixelLayout.I420;
+        }
+
+        if (subtype == VideoFormatYv12Guid)
+        {
+            return VideoPixelLayout.Yv12;
+        }
+
+        AppLog.Write("unsupported video pixel format: " + subtype.ToString("D"));
+        return VideoPixelLayout.Unsupported;
     }
 
     /// <summary>Row pitch from the negotiation result; 0 when the decoder does not report one.</summary>
@@ -243,6 +324,12 @@ internal sealed class MediaFoundationVideo : IDisposable
     /// </summary>
     private void CopyFrame(IntPtr pointer, int currentLength)
     {
+        if (_pixelLayout != VideoPixelLayout.Bgra)
+        {
+            ConvertYuvFrame(pointer, currentLength);
+            return;
+        }
+
         int packedStride = Width * 4;
         int absoluteStride = Math.Abs(Stride);
 
@@ -267,6 +354,140 @@ internal sealed class MediaFoundationVideo : IDisposable
             IntPtr source = IntPtr.Add(pointer, sourceRow * absoluteStride);
             Marshal.Copy(source, _frameBuffer, row * packedStride, copiedBytes);
         }
+    }
+
+    /// <summary>
+    /// Converts a decoded YUV frame into the packed BGRA buffer. NV12 and I420/YV12 are the formats a decoder
+    /// falls back to when no colour converter is in the graph, and they are 1.5 bytes per pixel, so reading
+    /// them as BGRA produces a grey smear, a black band and a green fringe — exactly the symptoms that made
+    /// the wallpaper look broken rather than the geometry.
+    /// </summary>
+    private void ConvertYuvFrame(IntPtr pointer, int currentLength)
+    {
+        int stride = Math.Abs(Stride);
+        if (stride < Width)
+        {
+            stride = Width;
+        }
+
+        if (_sourceBuffer.Length < currentLength)
+        {
+            _sourceBuffer = new byte[currentLength];
+        }
+
+        Marshal.Copy(pointer, _sourceBuffer, 0, currentLength);
+        LastBufferLength = currentLength;
+
+        int rows = Math.Min(Height, currentLength / Math.Max(1, stride));
+        LastRowsCopied = rows;
+
+        // BT.709 for HD content, BT.601 for anything smaller; the difference is visible on skin tones.
+        bool highDefinition = Height >= 720;
+        int redFromV = highDefinition ? 1836 : 1634;
+        int greenFromU = highDefinition ? -218 : -401;
+        int greenFromV = highDefinition ? -546 : -833;
+        int blueFromU = highDefinition ? 2165 : 2066;
+
+        int lumaPlaneLength = stride * Height;
+        int chromaRowStride = _pixelLayout == VideoPixelLayout.Nv12 ? stride : Math.Max(2, stride / 2);
+        int chromaRows = (Height + 1) / 2;
+        int chromaPlaneLength = chromaRowStride * chromaRows;
+        int uPlaneOffset = lumaPlaneLength;
+        int vPlaneOffset = lumaPlaneLength;
+        if (_pixelLayout == VideoPixelLayout.I420)
+        {
+            vPlaneOffset = lumaPlaneLength + chromaPlaneLength;
+        }
+        else if (_pixelLayout == VideoPixelLayout.Yv12)
+        {
+            vPlaneOffset = lumaPlaneLength;
+            uPlaneOffset = lumaPlaneLength + chromaPlaneLength;
+        }
+
+        bool halfPlanar = _pixelLayout == VideoPixelLayout.Nv12;
+        int writeOffset = 0;
+
+        for (int row = 0; row < rows; row++)
+        {
+            int lumaRowOffset = row * stride;
+            int chromaRowOffset = (row / 2) * chromaRowStride;
+
+            for (int column = 0; column < Width; column++)
+            {
+                int lumaIndex = lumaRowOffset + column;
+                int luma = lumaIndex < currentLength ? _sourceBuffer[lumaIndex] : (byte)16;
+
+                int chromaColumn = column / 2;
+                int u;
+                int v;
+                if (halfPlanar)
+                {
+                    int pairIndex = lumaPlaneLength + chromaRowOffset + (chromaColumn * 2);
+                    u = pairIndex < currentLength ? _sourceBuffer[pairIndex] : 128;
+                    v = (pairIndex + 1) < currentLength ? _sourceBuffer[pairIndex + 1] : 128;
+                }
+                else
+                {
+                    int uIndex = uPlaneOffset + chromaRowOffset + chromaColumn;
+                    int vIndex = vPlaneOffset + chromaRowOffset + chromaColumn;
+                    u = uIndex < currentLength ? _sourceBuffer[uIndex] : 128;
+                    v = vIndex < currentLength ? _sourceBuffer[vIndex] : 128;
+                }
+
+                WriteYuvPixel(
+                    _frameBuffer,
+                    writeOffset,
+                    luma,
+                    u,
+                    v,
+                    redFromV,
+                    greenFromU,
+                    greenFromV,
+                    blueFromU);
+                writeOffset += 4;
+            }
+        }
+
+        if (writeOffset < _frameBuffer.Length)
+        {
+            Array.Clear(_frameBuffer, writeOffset, _frameBuffer.Length - writeOffset);
+        }
+    }
+
+    /// <summary>One limited-range YUV pixel to BGRA, in fixed point: the coefficients are scaled by 1024.</summary>
+    private static void WriteYuvPixel(
+        byte[] target,
+        int offset,
+        int luma,
+        int u,
+        int v,
+        int redFromV,
+        int greenFromU,
+        int greenFromV,
+        int blueFromU)
+    {
+        int scaledLuma = luma > 16 ? (luma - 16) * 1192 : 0;
+        int centredU = u - 128;
+        int centredV = v - 128;
+
+        int red = (scaledLuma + (redFromV * centredV)) >> 10;
+        int green = (scaledLuma + (greenFromU * centredU) + (greenFromV * centredV)) >> 10;
+        int blue = (scaledLuma + (blueFromU * centredU)) >> 10;
+
+        target[offset] = ClampToByte(blue);
+        target[offset + 1] = ClampToByte(green);
+        target[offset + 2] = ClampToByte(red);
+        target[offset + 3] = 255;
+    }
+
+    private static byte ClampToByte(int value)
+    {
+        if (value < 0)
+        {
+            return 0;
+        }
+
+        return value > 255 ? (byte)255 : (byte)value;
     }
 
     /// <summary>Jumps back to the start, for looping.</summary>
