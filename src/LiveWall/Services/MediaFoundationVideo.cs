@@ -212,7 +212,7 @@ internal sealed class MediaFoundationVideo : IDisposable
         Guid subtype;
         try
         {
-            subtype = attributes.GetGuid(MediaTypeSubTypeKey);
+            subtype = attributes.GetGUID(MediaTypeSubTypeKey);
         }
         catch (Exception)
         {
