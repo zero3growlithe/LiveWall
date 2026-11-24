@@ -69,6 +69,7 @@ public sealed class CompositionSurface : IWallpaperSurface
     }
 
     private readonly string _deviceName;
+    private readonly WallpaperScaleMode _scaleMode;
     private readonly Dispatcher _dispatcher;
     private readonly object _sync = new object();
     private readonly Random _shuffleRandom = new Random();
@@ -96,12 +97,14 @@ public sealed class CompositionSurface : IWallpaperSurface
     private int _windowHeight;
     private double _devicePixelsPerDip = 1.0;
     private bool _firstFrameLogged;
+    private bool _videoGeometryLogged;
     private long _framesPresented;
     private volatile bool _renderThreadAlive;
 
-    public CompositionSurface(string deviceName)
+    public CompositionSurface(string deviceName, WallpaperScaleMode scaleMode)
     {
         _deviceName = deviceName;
+        _scaleMode = scaleMode;
         _dispatcher = Dispatcher.CurrentDispatcher;
     }
 
@@ -203,10 +206,33 @@ public sealed class CompositionSurface : IWallpaperSurface
                 dpi = DefaultDpi;
             }
 
-            // Measured behaviour on build 26200: DirectComposition does NOT rescale a visual by the target
-            // window's DPI, so one DIP is one device pixel here. Dividing by (dpi/96) made the wallpaper cover
-            // only part of a scaled monitor, which is exactly the "does not fill the screen" report.
-            double devicePixelsPerDip = 1.0;
+            // DirectComposition may or may not turn the visual's DIP coordinates into device pixels with the
+            // display scaling, and the answer differs per window and build. Take the largest DPI the three
+            // sources report (our window, its monitor, the desktop host it is parented into) and divide by it,
+            // then log all of them: a 150 % display showing the wallpaper 1.5x too large is exactly the case
+            // this compensates for, and the log says which source produced the factor.
+            int hostDpi = host.ParentWindow == IntPtr.Zero ? 0 : NativeMethods.GetDpiForWindow(host.ParentWindow);
+            int monitorDpi = ReadMonitorDpi(_windowHandle);
+            int effectiveDpi = Math.Max(dpi, Math.Max(hostDpi, monitorDpi));
+            if (effectiveDpi <= 0)
+            {
+                effectiveDpi = DefaultDpi;
+            }
+
+            double devicePixelsPerDip;
+            switch (_scaleMode)
+            {
+                case WallpaperScaleMode.Pixels:
+                    devicePixelsPerDip = 1.0;
+                    break;
+                case WallpaperScaleMode.AssumeOneHundredFiftyPercent:
+                    devicePixelsPerDip = (double)PixelsPerDipBase / 144.0;
+                    break;
+                default:
+                    devicePixelsPerDip = (double)PixelsPerDipBase / effectiveDpi;
+                    break;
+            }
+
             _devicePixelsPerDip = devicePixelsPerDip;
 
             RECT clientRectangle;
@@ -216,7 +242,7 @@ public sealed class CompositionSurface : IWallpaperSurface
 
             AppLog.Write(string.Format(
                 CultureInfo.InvariantCulture,
-                "composition surface attached for {0} at {1},{2},{3}x{4} under host 0x{5:X} (window 0x{6:X}, dpi {7}, client {8})",
+                "composition surface attached for {0} at {1},{2},{3}x{4} under host 0x{5:X} (window 0x{6:X}, client {7}, dpi window {8} monitor {9} host {10} -> {11}, scale mode {12}, dip scale {13:F3})",
                 _deviceName,
                 monitorRectangle.Left,
                 monitorRectangle.Top,
@@ -224,8 +250,13 @@ public sealed class CompositionSurface : IWallpaperSurface
                 _windowHeight,
                 host.ParentWindow.ToInt64(),
                 _windowHandle.ToInt64(),
+                clientSize,
                 dpi,
-                clientSize));
+                monitorDpi,
+                hostDpi,
+                effectiveDpi,
+                _scaleMode,
+                devicePixelsPerDip));
 
             int width = _windowWidth;
             int height = _windowHeight;
@@ -595,6 +626,7 @@ public sealed class CompositionSurface : IWallpaperSurface
                         {
                             video = candidate;
                             _isVideoOpen = true;
+                            _videoGeometryLogged = false;
                             firstSampleTime = -1;
                             playbackStartTimestamp = 0;
                             presenter.InvalidateTransform();
@@ -619,7 +651,7 @@ public sealed class CompositionSurface : IWallpaperSurface
                     try
                     {
                         presenter.ShowPixels(frame.Pixels, frame.Width, frame.Height, frame.Stretch);
-                        LogFirstFrame(frame.Width, frame.Height, frame.Stretch, frame.Description);
+                        LogFirstFrame(presenter, frame.Width, frame.Height, frame.Stretch, frame.Description);
                         Interlocked.Increment(ref _framesPresented);
                         SetDescription(frame.Description);
                     }
@@ -674,7 +706,8 @@ public sealed class CompositionSurface : IWallpaperSurface
                     try
                     {
                         presenter.ShowPixels(pixels, video.Width, video.Height, stretch);
-                        LogFirstFrame(video.Width, video.Height, stretch, _description);
+                        LogFirstFrame(presenter, video.Width, video.Height, stretch, _description);
+                        LogVideoGeometry(video);
                         Interlocked.Increment(ref _framesPresented);
                     }
                     catch (Exception exception)
@@ -716,11 +749,36 @@ public sealed class CompositionSurface : IWallpaperSurface
         }
     }
 
+    /// <summary>Effective DPI of the monitor a window sits on, 0 when the shell cannot tell us.</summary>
+    private static int ReadMonitorDpi(IntPtr windowHandle)
+    {
+        try
+        {
+            IntPtr monitorHandle = NativeMethods.MonitorFromWindow(windowHandle, NativeMethods.MONITOR_DEFAULTTONEAREST);
+            if (monitorHandle == IntPtr.Zero)
+            {
+                return 0;
+            }
+
+            if (NativeMethods.GetDpiForMonitor(monitorHandle, NativeMethods.MDT_EFFECTIVE_DPI, out uint dpiX, out uint dpiY) != 0)
+            {
+                return 0;
+            }
+
+            return (int)dpiX;
+        }
+        catch (Exception)
+        {
+            // shcore.dll is present on Windows 8.1 and newer; a missing entry point is not worth a crash.
+            return 0;
+        }
+    }
+
     /// <summary>
     /// One line per source that records the geometry of the first presented frame: it is the only way to tell a
     /// wrong visual transform from a decoder that reports the wrong frame size, without a Windows machine.
     /// </summary>
-    private void LogFirstFrame(int sourceWidth, int sourceHeight, WallpaperStretch stretch, string description)
+    private void LogFirstFrame(CompositionPresenter presenter, int sourceWidth, int sourceHeight, WallpaperStretch stretch, string description)
     {
         if (_firstFrameLogged)
         {
@@ -730,7 +788,7 @@ public sealed class CompositionSurface : IWallpaperSurface
         _firstFrameLogged = true;
         AppLog.Write(string.Format(
             CultureInfo.InvariantCulture,
-            "first frame presented for {0}: {1} — source {2}x{3} -> window {4}x{5} px, dpiScale {6:F3}, {7}, {8}",
+            "first frame presented for {0}: {1} — source {2}x{3} -> window {4}x{5} px, dip scale {6:F3}, visual scale {7:F3}x{8:F3} ({9}), {10}",
             _deviceName,
             description,
             sourceWidth,
@@ -738,8 +796,34 @@ public sealed class CompositionSurface : IWallpaperSurface
             _windowWidth,
             _windowHeight,
             _devicePixelsPerDip,
+            presenter.LastScaleX,
+            presenter.LastScaleY,
             stretch,
             _hostDescription));
+    }
+
+    /// <summary>
+    /// Logs how the decoder actually lays a frame out. A buffer with fewer rows than the reported frame size is
+    /// the one case that leaves a black band at the bottom of the wallpaper, so it must be visible in the log.
+    /// </summary>
+    private void LogVideoGeometry(MediaFoundationVideo video)
+    {
+        if (_videoGeometryLogged)
+        {
+            return;
+        }
+
+        _videoGeometryLogged = true;
+        AppLog.Write(string.Format(
+            CultureInfo.InvariantCulture,
+            "video frame geometry for {0}: {1}x{2}, stride {3}, buffer {4} bytes (packed would be {5}), rows copied {6}",
+            _deviceName,
+            video.Width,
+            video.Height,
+            video.Stride,
+            video.LastBufferLength,
+            video.ExpectedBufferLength,
+            video.LastRowsCopied));
     }
 
     /// <summary>Sleeps until the next sample is due, so a video plays at its own speed instead of decoding flat out.</summary>

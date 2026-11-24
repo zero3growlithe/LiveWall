@@ -453,7 +453,7 @@ public sealed class WallpaperEngine : IDisposable
     {
         if (_settings.Renderer == RendererPreference.Composition)
         {
-            return new CompositionSurface(deviceName);
+            return new CompositionSurface(deviceName, _settings.WallpaperScale);
         }
 
         return new WallpaperSurface(deviceName);

@@ -67,6 +67,7 @@ public partial class MainWindow : Window
             StartMinimizedCheckBox.IsChecked = _settings.StartMinimized;
             StartWithWindowsCheckBox.IsChecked = StartupService.IsRegistered();
             RendererComboBox.SelectedIndex = (int)_settings.Renderer;
+            WallpaperScaleComboBox.SelectedIndex = (int)_settings.WallpaperScale;
         }
         finally
         {
@@ -371,6 +372,7 @@ public partial class MainWindow : Window
         _settings.SameForAllMonitors = SameForAllCheckBox.IsChecked == true;
         _settings.Renderer = (RendererPreference)Math.Clamp(RendererComboBox.SelectedIndex, 0, 2);
         _settings.RenderMode = _settings.Renderer == RendererPreference.WpfSoftware ? RenderModePreference.Software : RenderModePreference.Hardware;
+        _settings.WallpaperScale = ReadScaleMode();
         SaveEditor();
         _settings.PauseWhenMaximized = PauseMaximizedCheckBox.IsChecked == true;
         _settings.PauseWhenFullscreen = PauseFullscreenCheckBox.IsChecked == true;
@@ -465,6 +467,30 @@ public partial class MainWindow : Window
 
         _settings.Renderer = (RendererPreference)Math.Clamp(RendererComboBox.SelectedIndex, 0, 2);
         _settings.RenderMode = _settings.Renderer == RendererPreference.WpfSoftware ? RenderModePreference.Software : RenderModePreference.Hardware;
+        SettingsService.Save(_settings);
+    }
+
+    private WallpaperScaleMode ReadScaleMode()
+    {
+        switch (WallpaperScaleComboBox.SelectedIndex)
+        {
+            case 1:
+                return WallpaperScaleMode.Pixels;
+            case 2:
+                return WallpaperScaleMode.AssumeOneHundredFiftyPercent;
+            default:
+                return WallpaperScaleMode.MatchDisplayScaling;
+        }
+    }
+
+    private void WallpaperScaleComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_suppressEditorEvents)
+        {
+            return;
+        }
+
+        _settings.WallpaperScale = ReadScaleMode();
         SettingsService.Save(_settings);
     }
 

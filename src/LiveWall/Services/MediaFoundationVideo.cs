@@ -49,6 +49,16 @@ internal sealed class MediaFoundationVideo : IDisposable
     /// </summary>
     public int Stride { get; private set; }
 
+    /// <summary>Size of the last decoded buffer and how many rows actually came out of it, for the log.</summary>
+    public int LastBufferLength { get; private set; }
+
+    public int LastRowsCopied { get; private set; }
+
+    public int ExpectedBufferLength
+    {
+        get { return Width * Height * 4; }
+    }
+
     public string FailureReason { get; private set; } = string.Empty;
 
     public bool IsOpen
@@ -238,6 +248,8 @@ internal sealed class MediaFoundationVideo : IDisposable
 
         if (Stride == packedStride && currentLength >= _frameBuffer.Length)
         {
+            LastBufferLength = currentLength;
+            LastRowsCopied = Height;
             Marshal.Copy(pointer, _frameBuffer, 0, _frameBuffer.Length);
             return;
         }
@@ -246,6 +258,8 @@ internal sealed class MediaFoundationVideo : IDisposable
         int copiedBytes = Math.Min(absoluteStride, packedStride);
         int availableRows = Math.Max(0, currentLength / Math.Max(1, absoluteStride));
         int rowCount = Math.Min(Height, availableRows);
+        LastBufferLength = currentLength;
+        LastRowsCopied = rowCount;
 
         for (int row = 0; row < rowCount; row++)
         {

@@ -52,6 +52,8 @@ internal sealed class CompositionPresenter : IDisposable
     private WallpaperStretch _stretch = WallpaperStretch.Fill;
     private bool _transformValid;
     private string _deviceDescription = "not created";
+    private double _lastScaleX = 1.0;
+    private double _lastScaleY = 1.0;
 
     /// <summary>Which GPU/D3D feature level the presenter ended up with, for the diagnostics report.</summary>
     public string DeviceDescription
@@ -72,6 +74,17 @@ internal sealed class CompositionPresenter : IDisposable
     public int BufferHeight
     {
         get { return _bufferHeight; }
+    }
+
+    /// <summary>The scale that was last handed to the visual, for the diagnostics log.</summary>
+    public double LastScaleX
+    {
+        get { return _lastScaleX; }
+    }
+
+    public double LastScaleY
+    {
+        get { return _lastScaleY; }
     }
 
     /// <summary>
@@ -273,6 +286,8 @@ internal sealed class CompositionPresenter : IDisposable
         _compositionDevice!.Commit();
         _stretch = stretch;
         _transformValid = true;
+        _lastScaleX = scaleX * _devicePixelsPerDip;
+        _lastScaleY = scaleY * _devicePixelsPerDip;
     }
 
     private void ReleaseSwapChain()

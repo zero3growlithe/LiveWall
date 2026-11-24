@@ -134,6 +134,12 @@
                             <ComboBoxItem Content="WPF, hardware rendering (older builds)" />
                             <ComboBoxItem Content="WPF, software rendering (older builds)" />
                         </ComboBox>
+                        <ComboBox x:Name="WallpaperScaleComboBox" Width="360" HorizontalAlignment="Left" Margin="0,6,0,0"
+                                  SelectionChanged="WallpaperScaleComboBox_SelectionChanged">
+                            <ComboBoxItem Content="Wallpaper scale: match the display scaling" />
+                            <ComboBoxItem Content="Wallpaper scale: pixels as DIPs (no DPI adjustment)" />
+                            <ComboBoxItem Content="Wallpaper scale: assume a 150 % display" />
+                        </ComboBox>
                         <TextBlock FontSize="11" Foreground="#6A6A75" TextWrapping="Wrap" Margin="0,4,0,0"
                                    Text="DirectComposition is the only stack Windows 11 24H2 and newer composes into the desktop. The WPF modes only work on older builds. Takes effect after a restart." />
                         <StackPanel Orientation="Horizontal" Margin="0,8,0,0">

@@ -147,6 +147,12 @@ internal static class NativeMethods
     [DllImport("user32.dll")]
     internal static extern int GetDpiForWindow(IntPtr windowHandle);
 
+    /// <summary>MDT_EFFECTIVE_DPI for <see cref="GetDpiForMonitor"/>.</summary>
+    internal const int MDT_EFFECTIVE_DPI = 0;
+
+    [DllImport("shcore.dll")]
+    internal static extern int GetDpiForMonitor(IntPtr monitorHandle, int dpiType, out uint dpiX, out uint dpiY);
+
     /// <summary>DPI_AWARENESS_CONTEXT_UNAWARE — a window created under it is treated as 96 DPI.</summary>
     internal static readonly IntPtr DpiAwarenessContextUnaware = new IntPtr(-1);
 
