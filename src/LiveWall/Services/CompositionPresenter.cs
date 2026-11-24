@@ -75,7 +75,7 @@ internal sealed class CompositionPresenter : IDisposable
     /// The Direct3D device, handed to the video decoder so Media Foundation can decode on the graphics card
     /// instead of the CPU. Null until <see cref="Initialize"/> has run.
     /// </summary>
-    public SharpGen.Runtime.IUnknown? DecoderDevice
+    public SharpGen.Runtime.ComObject? DecoderDevice
     {
         get { return _device; }
     }

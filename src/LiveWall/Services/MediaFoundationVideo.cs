@@ -119,7 +119,7 @@ internal sealed class MediaFoundationVideo : IDisposable
     public bool Open(
         string path,
         LiveWall.Models.VideoPixelMode pixelMode,
-        IUnknown? decoderDevice,
+        ComObject? decoderDevice,
         bool allowHardwareDecoding)
     {
         if (allowHardwareDecoding && decoderDevice != null && OpenCore(path, pixelMode, decoderDevice))
@@ -148,7 +148,7 @@ internal sealed class MediaFoundationVideo : IDisposable
         return OpenCore(path, LiveWall.Models.VideoPixelMode.DecoderConvertsToRgb, null);
     }
 
-    private bool OpenCore(string path, LiveWall.Models.VideoPixelMode pixelMode, IUnknown? decoderDevice)
+    private bool OpenCore(string path, LiveWall.Models.VideoPixelMode pixelMode, ComObject? decoderDevice)
     {
         Close();
 
@@ -157,7 +157,7 @@ internal sealed class MediaFoundationVideo : IDisposable
             EnsureMediaFoundationStarted();
 
             bool askForRgb = pixelMode == LiveWall.Models.VideoPixelMode.DecoderConvertsToRgb;
-            _readerAttributes = MediaFactory.MFCreateAttributes(decoderDevice != null ? 4 : 2);
+            _readerAttributes = MediaFactory.MFCreateAttributes((uint)(decoderDevice != null ? 4 : 2));
             _readerAttributes.Set(EnableVideoProcessingKey, askForRgb ? 1u : 0u);
 
             if (decoderDevice != null)
@@ -165,10 +165,8 @@ internal sealed class MediaFoundationVideo : IDisposable
                 // A DXGI device manager is what tells Media Foundation to decode on the graphics card. The
                 // advanced video processing flag lets the video processor convert and copy the hardware frame
                 // back to a normal memory buffer, which is all the wallpaper needs.
-                IMFDXGIDeviceManager deviceManager;
-                MediaFactory.MFCreateDXGIDeviceManager(out uint resetToken, out deviceManager);
-                _deviceManager = deviceManager;
-                _deviceManager.ResetDevice(decoderDevice, resetToken);
+                _deviceManager = MediaFactory.MFCreateDXGIDeviceManager();
+                _deviceManager.ResetDevice(decoderDevice);
                 _readerAttributes.Set(SourceReaderAttributeKeys.D3DManager, _deviceManager);
                 _readerAttributes.Set(SourceReaderAttributeKeys.EnableAdvancedVideoProcessing, 1u);
             }
