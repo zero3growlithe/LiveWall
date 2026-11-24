@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Diagnostics;
@@ -20,6 +21,7 @@ public partial class MainWindow : Window
 
     private bool _suppressEditorEvents;
     private bool _exitRequested;
+    private DateTime _lastDeactivatedLogUtc = DateTime.MinValue;
 
     public MainWindow(WallpaperEngine engine, WallpaperSettings settings)
     {
@@ -27,6 +29,7 @@ public partial class MainWindow : Window
         _engine = engine;
         _settings = settings;
         MonitorList.ItemsSource = _targets;
+        ApplySavedPlacement();
         Loaded += MainWindow_Loaded;
         _engine.StatusChanged += Engine_StatusChanged;
     }
@@ -72,7 +75,7 @@ public partial class MainWindow : Window
             _engine.RefreshMonitors();
         }
 
-        RefreshMonitorTargets();
+        SyncMonitorTargets();
         LoadEditor();
         UpdateStatuses();
     }
@@ -84,44 +87,71 @@ public partial class MainWindow : Window
 
     // ── Monitor list ──
 
-    private void RefreshMonitorTargets()
+    /// <summary>
+    /// Mirrors the engine's monitor list into the bound collection WITHOUT ever clearing it: replacing the
+    /// items (or reassigning the ListBox selection) takes the focus away from whatever the user is doing,
+    /// which is what closed the drop-downs while it ran from the status refresh.
+    /// </summary>
+    private void SyncMonitorTargets()
     {
-        string selectedDeviceName = string.Empty;
-        MonitorTarget? selected = MonitorList.SelectedItem as MonitorTarget;
-        if (selected != null)
-        {
-            selectedDeviceName = selected.DeviceName;
-        }
+        IReadOnlyList<MonitorDescriptor> monitors = _engine.Monitors;
+        bool changed = false;
 
-        _suppressEditorEvents = true;
-        try
+        for (int index = _targets.Count - 1; index >= 0; index--)
         {
-            _targets.Clear();
-            foreach (MonitorDescriptor monitor in _engine.Monitors)
+            bool stillPresent = false;
+            for (int monitorIndex = 0; monitorIndex < monitors.Count; monitorIndex++)
             {
-                MonitorTarget target = new MonitorTarget(monitor.DeviceName, monitor.DisplayName);
-                target.StatusLine = _engine.GetMonitorStatus(monitor.DeviceName);
-                _targets.Add(target);
-            }
-
-            if (_targets.Count > 0)
-            {
-                int selectedIndex = 0;
-                for (int index = 0; index < _targets.Count; index++)
+                if (string.Equals(monitors[monitorIndex].DeviceName, _targets[index].DeviceName, StringComparison.OrdinalIgnoreCase))
                 {
-                    if (string.Equals(_targets[index].DeviceName, selectedDeviceName, StringComparison.OrdinalIgnoreCase))
-                    {
-                        selectedIndex = index;
-                        break;
-                    }
+                    stillPresent = true;
+                    break;
                 }
+            }
 
-                MonitorList.SelectedIndex = selectedIndex;
+            if (!stillPresent)
+            {
+                _targets.RemoveAt(index);
+                changed = true;
             }
         }
-        finally
+
+        for (int monitorIndex = 0; monitorIndex < monitors.Count; monitorIndex++)
         {
-            _suppressEditorEvents = false;
+            MonitorDescriptor monitor = monitors[monitorIndex];
+            MonitorTarget? existing = null;
+            foreach (MonitorTarget target in _targets)
+            {
+                if (string.Equals(target.DeviceName, monitor.DeviceName, StringComparison.OrdinalIgnoreCase))
+                {
+                    existing = target;
+                    break;
+                }
+            }
+
+            if (existing == null)
+            {
+                MonitorTarget created = new MonitorTarget(monitor.DeviceName, monitor.DisplayName);
+                _targets.Insert(Math.Min(monitor.Index, _targets.Count), created);
+                changed = true;
+            }
+            else if (!string.Equals(existing.DisplayName, monitor.DisplayName, StringComparison.Ordinal))
+            {
+                existing.DisplayName = monitor.DisplayName;
+            }
+        }
+
+        if (changed && MonitorList.SelectedItem == null && _targets.Count > 0)
+        {
+            _suppressEditorEvents = true;
+            try
+            {
+                MonitorList.SelectedIndex = 0;
+            }
+            finally
+            {
+                _suppressEditorEvents = false;
+            }
         }
     }
 
@@ -302,27 +332,32 @@ public partial class MainWindow : Window
 
     private void UpdateStatuses()
     {
-        if (_targets.Count != _engine.Monitors.Count)
-        {
-            RefreshMonitorTargets();
-        }
+        SyncMonitorTargets();
 
         foreach (MonitorTarget target in _targets)
         {
             target.StatusLine = _engine.GetMonitorStatus(target.DeviceName);
         }
 
-        if (_engine.IsRunning)
-        {
-            EngineStateTextBlock.Text = _engine.IsManualPause ? "Engine running — paused manually" : "Engine running";
-        }
-        else
-        {
-            EngineStateTextBlock.Text = "Engine stopped";
-        }
+        string engineState = _engine.IsRunning
+            ? (_engine.IsManualPause ? "Engine running — paused manually" : "Engine running")
+            : "Engine stopped";
+        SetTextIfChanged(EngineStateTextBlock, engineState);
+        SetTextIfChanged(StatusTextBlock, _engine.GetGlobalStatusText());
 
-        StatusTextBlock.Text = _engine.GetGlobalStatusText();
-        TogglePauseButton.Content = _engine.IsManualPause ? "Resume all" : "Pause all";
+        string pauseLabel = _engine.IsManualPause ? "Resume all" : "Pause all";
+        if (!string.Equals(TogglePauseButton.Content as string, pauseLabel, StringComparison.Ordinal))
+        {
+            TogglePauseButton.Content = pauseLabel;
+        }
+    }
+
+    private static void SetTextIfChanged(TextBlock textBlock, string text)
+    {
+        if (!string.Equals(textBlock.Text, text, StringComparison.Ordinal))
+        {
+            textBlock.Text = text;
+        }
     }
 
     // ── Commands ──
@@ -391,6 +426,7 @@ public partial class MainWindow : Window
 
     private void Tray_Click(object sender, RoutedEventArgs e)
     {
+        SaveWindowPlacement();
         Hide();
     }
 
@@ -454,6 +490,8 @@ public partial class MainWindow : Window
 
     private void Window_Closing(object sender, CancelEventArgs e)
     {
+        SaveWindowPlacement();
+
         if (_exitRequested)
         {
             return;
@@ -461,5 +499,82 @@ public partial class MainWindow : Window
 
         e.Cancel = true;
         Hide();
+    }
+
+    private void Window_Deactivated(object sender, EventArgs e)
+    {
+        // Diagnostic for "the drop-down closes by itself": if this window is losing activation in a loop,
+        // crash.log says so instead of leaving it to guesswork.
+        DateTime now = DateTime.UtcNow;
+        if (now - _lastDeactivatedLogUtc < TimeSpan.FromSeconds(3.0))
+        {
+            return;
+        }
+
+        _lastDeactivatedLogUtc = now;
+        AppLog.Write("settings window deactivated");
+    }
+
+    // ── Window placement ──
+
+    /// <summary>
+    /// Positions the window explicitly instead of relying on WindowStartupLocation.CenterScreen, and
+    /// restores the saved rectangle when it is still on a connected monitor.
+    /// </summary>
+    private void ApplySavedPlacement()
+    {
+        WindowStartupLocation = WindowStartupLocation.Manual;
+
+        double width = _settings.WindowWidth.HasValue && _settings.WindowWidth.Value >= MinWidth ? _settings.WindowWidth.Value : Width;
+        double height = _settings.WindowHeight.HasValue && _settings.WindowHeight.Value >= MinHeight ? _settings.WindowHeight.Value : Height;
+        Width = width;
+        Height = height;
+
+        if (_settings.WindowLeft.HasValue
+            && _settings.WindowTop.HasValue
+            && IsPlacementVisible(_settings.WindowLeft.Value, _settings.WindowTop.Value, width))
+        {
+            Left = _settings.WindowLeft.Value;
+            Top = _settings.WindowTop.Value;
+            return;
+        }
+
+        Left = SystemParameters.VirtualScreenLeft + Math.Max((SystemParameters.VirtualScreenWidth - width) / 2.0, 0.0);
+        Top = SystemParameters.VirtualScreenTop + Math.Max((SystemParameters.VirtualScreenHeight - height) / 3.0, 0.0);
+    }
+
+    private static bool IsPlacementVisible(double left, double top, double width)
+    {
+        double virtualLeft = SystemParameters.VirtualScreenLeft;
+        double virtualTop = SystemParameters.VirtualScreenTop;
+        double virtualRight = virtualLeft + SystemParameters.VirtualScreenWidth;
+        double virtualBottom = virtualTop + SystemParameters.VirtualScreenHeight;
+
+        return left + 120.0 <= virtualRight
+            && left >= virtualLeft - width + 120.0
+            && top >= virtualTop
+            && top + 60.0 <= virtualBottom;
+    }
+
+    /// <summary>Remembers where the window is, so the next launch (and the next Show) keeps that place.</summary>
+    public void SaveWindowPlacement()
+    {
+        if (double.IsNaN(Left) || double.IsNaN(Top) || double.IsNaN(Width) || double.IsNaN(Height))
+        {
+            // Started with --tray and never shown: there is no rectangle to remember yet, and Rect would throw.
+            return;
+        }
+
+        Rect bounds = WindowState == WindowState.Normal ? new Rect(Left, Top, Width, Height) : RestoreBounds;
+        if (bounds.IsEmpty || bounds.Width < 100.0 || bounds.Height < 100.0)
+        {
+            return;
+        }
+
+        _settings.WindowLeft = bounds.Left;
+        _settings.WindowTop = bounds.Top;
+        _settings.WindowWidth = bounds.Width;
+        _settings.WindowHeight = bounds.Height;
+        SettingsService.Save(_settings);
     }
 }

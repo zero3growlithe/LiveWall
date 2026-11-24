@@ -24,6 +24,8 @@ lets every monitor have its own wallpaper, and automatically pauses playback whi
 - **Start with Windows** (HKCU `Run`, registered with the `--tray` switch so a manual launch always
   opens the settings window while an autostart launch goes straight to the notification area).
 - Single instance, per-monitor DPI aware, settings and log in `%LocalAppData%\LiveWall\`.
+- The settings window remembers its position and size across launches, and the 500 ms coverage scan runs
+  on a worker thread so it can never stall the UI.
 
 ## Controls
 

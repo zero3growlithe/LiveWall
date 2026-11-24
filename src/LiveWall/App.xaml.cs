@@ -131,6 +131,7 @@ public partial class App : Application
     {
         if (_mainWindow != null)
         {
+            _mainWindow.SaveWindowPlacement();
             _mainWindow.ExitRequested = true;
         }
 

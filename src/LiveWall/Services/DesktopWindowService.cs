@@ -6,10 +6,19 @@ namespace LiveWall.Services;
 /// <summary>
 /// Finds the desktop host window (the WorkerW that sits behind the desktop icons) so wallpaper
 /// surfaces can be parented into it. Windows 10 and 11 differ, so three strategies are tried in order.
+///
+/// The 0x052C spawn message is rate limited: sending it on a loop makes Explorer rebuild its desktop
+/// windows a few times per second, which steals activation from the foreground application (this is
+/// what closed the settings window's drop-downs).
 /// </summary>
 public sealed class DesktopWindowService
 {
+    private const uint SpawnMessageTimeoutMilliseconds = 200;
+
+    private static readonly TimeSpan SpawnMessageInterval = TimeSpan.FromSeconds(10);
+
     private IntPtr _workerWindow = IntPtr.Zero;
+    private DateTime _lastSpawnMessageUtc = DateTime.MinValue;
 
     public IntPtr WorkerWindow
     {
@@ -30,12 +39,13 @@ public sealed class DesktopWindowService
 
         _workerWindow = IntPtr.Zero;
         IntPtr progmanWindow = NativeMethods.FindWindow("Progman", null);
-        if (progmanWindow != IntPtr.Zero)
+        if (progmanWindow != IntPtr.Zero && DateTime.UtcNow - _lastSpawnMessageUtc >= SpawnMessageInterval)
         {
             // The 0x052C message makes Explorer spawn the WorkerW that lives behind the icons.
+            _lastSpawnMessageUtc = DateTime.UtcNow;
             IntPtr messageResult;
-            NativeMethods.SendMessageTimeout(progmanWindow, NativeMethods.WM_SPAWN_WORKER, new IntPtr(0x0D), new IntPtr(0x01), NativeMethods.SMTO_NORMAL, 1000, out messageResult);
-            NativeMethods.SendMessageTimeout(progmanWindow, NativeMethods.WM_SPAWN_WORKER, IntPtr.Zero, IntPtr.Zero, NativeMethods.SMTO_NORMAL, 1000, out messageResult);
+            NativeMethods.SendMessageTimeout(progmanWindow, NativeMethods.WM_SPAWN_WORKER, new IntPtr(0x0D), new IntPtr(0x01), NativeMethods.SMTO_NORMAL, SpawnMessageTimeoutMilliseconds, out messageResult);
+            NativeMethods.SendMessageTimeout(progmanWindow, NativeMethods.WM_SPAWN_WORKER, IntPtr.Zero, IntPtr.Zero, NativeMethods.SMTO_NORMAL, SpawnMessageTimeoutMilliseconds, out messageResult);
         }
 
         IntPtr workerBehindIcons = IntPtr.Zero;

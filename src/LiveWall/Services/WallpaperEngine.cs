@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using System.Windows.Threading;
 using LiveWall.Models;
 
@@ -8,26 +9,42 @@ namespace LiveWall.Services;
 /// <summary>
 /// Owns one <see cref="WallpaperSurface"/> per monitor, re-attaches them when Explorer restarts,
 /// and pauses/resumes playback according to <see cref="FullscreenWatcher"/>.
+///
+/// Everything that touches WPF runs on the dispatcher thread. The 500 ms scan (window enumeration,
+/// DWM queries, monitor enumeration) runs on a worker thread and only posts its RESULT to the UI, so
+/// the settings window never stalls and its drop-downs keep working.
 /// </summary>
 public sealed class WallpaperEngine : IDisposable
 {
     private const int WatchIntervalMilliseconds = 500;
-    private const int MonitorRescanTickInterval = 10;
+    private const int FailingRebuildThreshold = 3;
+
+    private static readonly TimeSpan MinimumRetryInterval = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan FailingRetryInterval = TimeSpan.FromSeconds(30);
 
     private readonly Dictionary<string, WallpaperSurface> _surfaces = new Dictionary<string, WallpaperSurface>(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _attachFailures = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _pauseReasons = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
     private readonly FullscreenWatcher _watcher = new FullscreenWatcher();
     private readonly DesktopWindowService _desktopWindowService = new DesktopWindowService();
+    private readonly Dispatcher _dispatcher;
+    private readonly Timer _watchTimer;
 
-    private DispatcherTimer? _watchTimer;
     private List<MonitorDescriptor> _monitors = new List<MonitorDescriptor>();
     private WallpaperSettings _settings = new WallpaperSettings();
     private PauseDecision _lastDecision = new PauseDecision();
+    private DateTime _lastRetryUtc = DateTime.MinValue;
+    private int _consecutiveFailures;
+    private int _tickRunning;
     private bool _isRunning;
     private bool _isManualPause;
     private bool _disposed;
-    private int _tickCounter;
+
+    public WallpaperEngine()
+    {
+        _dispatcher = Dispatcher.CurrentDispatcher;
+        _watchTimer = new Timer(WatchTimer_Tick, null, Timeout.Infinite, Timeout.Infinite);
+    }
 
     public event EventHandler? StatusChanged;
 
@@ -51,7 +68,7 @@ public sealed class WallpaperEngine : IDisposable
             }
 
             _isManualPause = value;
-            UpdatePlaybackState();
+            ApplyPlaybackState(ReevaluateNow());
             RaiseStatusChanged();
         }
     }
@@ -69,32 +86,20 @@ public sealed class WallpaperEngine : IDisposable
     public void Start(WallpaperSettings settings)
     {
         _settings = settings;
-        RefreshMonitors();
+        _monitors = MonitorService.GetMonitors();
         RebuildSurfaces();
 
-        if (_watchTimer == null)
-        {
-            _watchTimer = new DispatcherTimer();
-            _watchTimer.Interval = TimeSpan.FromMilliseconds(WatchIntervalMilliseconds);
-            _watchTimer.Tick += WatchTimer_Tick;
-        }
-
         _isRunning = true;
-        _watchTimer.Start();
-        UpdatePlaybackState();
+        ApplyPlaybackState(ReevaluateNow());
+        _watchTimer.Change(WatchIntervalMilliseconds, WatchIntervalMilliseconds);
         RaiseStatusChanged();
     }
 
     public void Stop()
     {
         _isRunning = false;
-        if (_watchTimer != null)
-        {
-            _watchTimer.Stop();
-        }
-
+        _watchTimer.Change(Timeout.Infinite, Timeout.Infinite);
         DisposeSurfaces();
-        _pauseReasons.Clear();
         _lastDecision = new PauseDecision();
         RaiseStatusChanged();
     }
@@ -109,9 +114,9 @@ public sealed class WallpaperEngine : IDisposable
             return;
         }
 
-        RefreshMonitors();
+        _monitors = MonitorService.GetMonitors();
         RebuildSurfaces();
-        UpdatePlaybackState();
+        ApplyPlaybackState(ReevaluateNow());
         RaiseStatusChanged();
     }
 
@@ -135,7 +140,7 @@ public sealed class WallpaperEngine : IDisposable
 
         if (surface == null)
         {
-            return "Stopped";
+            return "Waiting for the desktop host…";
         }
 
         string reason = string.Empty;
@@ -204,106 +209,108 @@ public sealed class WallpaperEngine : IDisposable
 
         _disposed = true;
         Stop();
+        _watchTimer.Dispose();
         _surfaces.Clear();
     }
 
-    // ── Surfaces ──
+    // ── Worker thread: detection only ──
 
-    private void RebuildSurfaces()
+    private void WatchTimer_Tick(object? state)
     {
-        DisposeSurfaces();
-        _attachFailures.Clear();
-
-        if (_monitors.Count == 0)
+        if (!_isRunning || _disposed)
         {
-            AppLog.Write("no monitors detected — nothing to draw");
             return;
         }
 
-        if (!_desktopWindowService.EnsureWorkerWindow())
+        if (Interlocked.CompareExchange(ref _tickRunning, 1, 0) != 0)
         {
-            AppLog.Write("desktop host window unavailable — wallpaper cannot be shown");
             return;
         }
 
-        IntPtr workerWindow = _desktopWindowService.WorkerWindow;
-        RECT workerRectangle = _desktopWindowService.GetWorkerRectangle();
-
-        foreach (MonitorDescriptor monitor in _monitors)
+        try
         {
-            WallpaperSurface surface = new WallpaperSurface(monitor.DeviceName);
-            if (!surface.Attach(workerWindow, monitor.MonitorRectangle, workerRectangle))
+            List<MonitorDescriptor> monitors = MonitorService.GetMonitors();
+            PauseDecision decision = _watcher.Evaluate(monitors, _settings.PauseWhenMaximized, _settings.PauseWhenFullscreen);
+            _dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() =>
             {
-                _attachFailures[monitor.DeviceName] = surface.AttachFailureReason;
-                surface.Dispose();
-                continue;
-            }
-
-            surface.ApplySource(_settings.SourceForMonitor(monitor.DeviceName));
-            _surfaces[monitor.DeviceName] = surface;
+                try
+                {
+                    ApplyTick(monitors, decision);
+                }
+                catch (Exception exception)
+                {
+                    AppLog.WriteException("applying a watch tick failed", exception);
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref _tickRunning, 0);
+                }
+            }));
         }
-    }
-
-    private void DisposeSurfaces()
-    {
-        foreach (KeyValuePair<string, WallpaperSurface> pair in _surfaces)
+        catch (Exception exception)
         {
-            pair.Value.Dispose();
+            AppLog.WriteException("watch tick scan failed", exception);
+            Interlocked.Exchange(ref _tickRunning, 0);
         }
-
-        _surfaces.Clear();
-        _pauseReasons.Clear();
     }
 
-    // ── Watch loop ──
+    private PauseDecision ReevaluateNow()
+    {
+        return _watcher.Evaluate(_monitors, _settings.PauseWhenMaximized, _settings.PauseWhenFullscreen);
+    }
 
-    private void WatchTimer_Tick(object? sender, EventArgs e)
+    // ── Dispatcher thread: apply ──
+
+    private void ApplyTick(List<MonitorDescriptor> monitors, PauseDecision decision)
     {
         if (!_isRunning)
         {
             return;
         }
 
-        _tickCounter++;
-        if (_tickCounter >= MonitorRescanTickInterval)
+        if (MonitorSetChanged(monitors))
         {
-            _tickCounter = 0;
-            if (MonitorSetChanged())
-            {
-                AppLog.Write("monitor layout changed — rebuilding surfaces");
-                RefreshMonitors();
-                RebuildSurfaces();
-                UpdatePlaybackState();
-                RaiseStatusChanged();
-                return;
-            }
-        }
-
-        if (!_desktopWindowService.IsAlive || _surfaces.Count == 0)
-        {
-            AppLog.Write("desktop host window lost (Explorer restart?) — re-attaching surfaces");
+            AppLog.Write("monitor layout changed — rebuilding surfaces");
+            _monitors = monitors;
             RebuildSurfaces();
         }
+        else if (!_desktopWindowService.IsAlive)
+        {
+            if (CanRetry())
+            {
+                AppLog.Write("desktop host window lost (Explorer restart?) — re-attaching surfaces");
+                RebuildSurfaces();
+            }
+        }
+        else if (_surfaces.Count < _monitors.Count && CanRetry())
+        {
+            AttachMissingSurfaces();
+        }
 
-        UpdatePlaybackState();
+        ApplyPlaybackState(decision);
     }
 
-    private bool MonitorSetChanged()
+    private bool CanRetry()
     {
-        List<MonitorDescriptor> current = MonitorService.GetMonitors();
-        if (current.Count != _monitors.Count)
+        TimeSpan interval = _consecutiveFailures >= FailingRebuildThreshold ? FailingRetryInterval : MinimumRetryInterval;
+        return DateTime.UtcNow - _lastRetryUtc >= interval;
+    }
+
+    private bool MonitorSetChanged(List<MonitorDescriptor> monitors)
+    {
+        if (monitors.Count != _monitors.Count)
         {
             return true;
         }
 
-        for (int index = 0; index < current.Count; index++)
+        for (int index = 0; index < monitors.Count; index++)
         {
-            if (!string.Equals(current[index].DeviceName, _monitors[index].DeviceName, StringComparison.OrdinalIgnoreCase))
+            if (!string.Equals(monitors[index].DeviceName, _monitors[index].DeviceName, StringComparison.OrdinalIgnoreCase))
             {
                 return true;
             }
 
-            RECT currentRectangle = current[index].MonitorRectangle;
+            RECT currentRectangle = monitors[index].MonitorRectangle;
             RECT knownRectangle = _monitors[index].MonitorRectangle;
             if (currentRectangle.Left != knownRectangle.Left
                 || currentRectangle.Top != knownRectangle.Top
@@ -317,14 +324,14 @@ public sealed class WallpaperEngine : IDisposable
         return false;
     }
 
-    private void UpdatePlaybackState()
+    private void ApplyPlaybackState(PauseDecision decision)
     {
         if (!_isRunning)
         {
             return;
         }
 
-        _lastDecision = _watcher.Evaluate(_monitors, _settings.PauseWhenMaximized, _settings.PauseWhenFullscreen);
+        _lastDecision = decision;
         bool stateChanged = false;
 
         foreach (KeyValuePair<string, WallpaperSurface> pair in _surfaces)
@@ -337,12 +344,12 @@ public sealed class WallpaperEngine : IDisposable
                 shouldPause = true;
                 reason = "paused manually";
             }
-            else if (_lastDecision.PauseAll)
+            else if (decision.PauseAll)
             {
                 shouldPause = true;
-                reason = _lastDecision.PauseAllReason;
+                reason = decision.PauseAllReason;
             }
-            else if (_lastDecision.MonitorReasons.TryGetValue(pair.Key, out string? monitorReason) && monitorReason != null)
+            else if (decision.MonitorReasons.TryGetValue(pair.Key, out string? monitorReason) && monitorReason != null)
             {
                 shouldPause = true;
                 reason = monitorReason;
@@ -372,6 +379,103 @@ public sealed class WallpaperEngine : IDisposable
         {
             RaiseStatusChanged();
         }
+    }
+
+    // ── Surfaces ──
+
+    private void RebuildSurfaces()
+    {
+        _lastRetryUtc = DateTime.UtcNow;
+        DisposeSurfaces();
+
+        if (_monitors.Count == 0)
+        {
+            _consecutiveFailures++;
+            AppLog.Write("no monitors detected — nothing to draw");
+            return;
+        }
+
+        if (!_desktopWindowService.EnsureWorkerWindow())
+        {
+            _consecutiveFailures++;
+            AppLog.Write("desktop host window unavailable — wallpaper cannot be shown");
+            return;
+        }
+
+        IntPtr workerWindow = _desktopWindowService.WorkerWindow;
+        RECT workerRectangle = _desktopWindowService.GetWorkerRectangle();
+        int attachedCount = 0;
+
+        foreach (MonitorDescriptor monitor in _monitors)
+        {
+            WallpaperSurface surface = new WallpaperSurface(monitor.DeviceName);
+            if (!surface.Attach(workerWindow, monitor.MonitorRectangle, workerRectangle))
+            {
+                _attachFailures[monitor.DeviceName] = surface.AttachFailureReason;
+                surface.Dispose();
+                continue;
+            }
+
+            surface.ApplySource(_settings.SourceForMonitor(monitor.DeviceName));
+            _surfaces[monitor.DeviceName] = surface;
+            attachedCount++;
+        }
+
+        _consecutiveFailures = attachedCount == _monitors.Count ? 0 : _consecutiveFailures + 1;
+    }
+
+    /// <summary>
+    /// Creates only the surfaces that are missing, so a monitor that appears later does not restart
+    /// the wallpaper already playing on the others.
+    /// </summary>
+    private void AttachMissingSurfaces()
+    {
+        _lastRetryUtc = DateTime.UtcNow;
+
+        if (!_desktopWindowService.EnsureWorkerWindow())
+        {
+            _consecutiveFailures++;
+            return;
+        }
+
+        IntPtr workerWindow = _desktopWindowService.WorkerWindow;
+        RECT workerRectangle = _desktopWindowService.GetWorkerRectangle();
+        bool allAttached = true;
+
+        foreach (MonitorDescriptor monitor in _monitors)
+        {
+            if (_surfaces.ContainsKey(monitor.DeviceName))
+            {
+                continue;
+            }
+
+            _attachFailures.Remove(monitor.DeviceName);
+            WallpaperSurface surface = new WallpaperSurface(monitor.DeviceName);
+            if (!surface.Attach(workerWindow, monitor.MonitorRectangle, workerRectangle))
+            {
+                _attachFailures[monitor.DeviceName] = surface.AttachFailureReason;
+                surface.Dispose();
+                allAttached = false;
+                continue;
+            }
+
+            surface.ApplySource(_settings.SourceForMonitor(monitor.DeviceName));
+            _surfaces[monitor.DeviceName] = surface;
+        }
+
+        _consecutiveFailures = allAttached ? 0 : _consecutiveFailures + 1;
+    }
+
+    private void DisposeSurfaces()
+    {
+        foreach (KeyValuePair<string, WallpaperSurface> pair in _surfaces)
+        {
+            pair.Value.Dispose();
+        }
+
+        _surfaces.Clear();
+        _pauseReasons.Clear();
+        _attachFailures.Clear();
     }
 
     private string MonitorLabel(string deviceName)

@@ -10,16 +10,35 @@ namespace LiveWall.Models;
 public sealed class MonitorTarget : INotifyPropertyChanged
 {
     private string _statusLine = "Stopped";
+    private string _displayName;
 
     public MonitorTarget(string deviceName, string displayName)
     {
         DeviceName = deviceName;
-        DisplayName = displayName;
+        _displayName = displayName;
     }
 
     public string DeviceName { get; }
 
-    public string DisplayName { get; }
+    public string DisplayName
+    {
+        get
+        {
+            return _displayName;
+        }
+
+        set
+        {
+            string safeValue = value == null ? string.Empty : value;
+            if (string.Equals(_displayName, safeValue, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            _displayName = safeValue;
+            RaisePropertyChanged(nameof(DisplayName));
+        }
+    }
 
     public string StatusLine
     {

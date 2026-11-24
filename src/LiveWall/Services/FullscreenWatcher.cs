@@ -21,9 +21,20 @@ public sealed class FullscreenWatcher
     private const int MaximumCachedProcessNames = 256;
 
     private readonly Dictionary<uint, string> _processNames = new Dictionary<uint, string>();
+    private readonly object _syncRoot = new object();
     private readonly uint _ownProcessId = (uint)Environment.ProcessId;
 
     public PauseDecision Evaluate(IReadOnlyList<MonitorDescriptor> monitors, bool watchMaximized, bool watchFullscreen)
+    {
+        // Runs on the engine's worker thread and, for an immediate re-check, on the dispatcher thread;
+        // the process-name cache is shared state.
+        lock (_syncRoot)
+        {
+            return EvaluateCore(monitors, watchMaximized, watchFullscreen);
+        }
+    }
+
+    private PauseDecision EvaluateCore(IReadOnlyList<MonitorDescriptor> monitors, bool watchMaximized, bool watchFullscreen)
     {
         PauseDecision decision = new PauseDecision();
         if (monitors.Count == 0)

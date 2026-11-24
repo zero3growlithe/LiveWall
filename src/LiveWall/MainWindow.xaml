@@ -5,8 +5,8 @@
         Height="660" Width="960"
         MinHeight="520" MinWidth="820"
         Background="#F7F7F9" Foreground="#1E1E22"
-        WindowStartupLocation="CenterScreen"
-        Closing="Window_Closing">
+        Closing="Window_Closing"
+        Deactivated="Window_Deactivated">
     <Grid Margin="14">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />

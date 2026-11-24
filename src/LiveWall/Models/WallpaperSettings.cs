@@ -28,6 +28,15 @@ public sealed class WallpaperSettings
 
     public bool StartWithWindows { get; set; }
 
+    // Saved settings-window placement, so the window reopens where it was left instead of centred.
+    public double? WindowLeft { get; set; }
+
+    public double? WindowTop { get; set; }
+
+    public double? WindowWidth { get; set; }
+
+    public double? WindowHeight { get; set; }
+
     /// <summary>Wallpaper to use for a monitor (falls back to the shared definition).</summary>
     public WallpaperSource SourceForMonitor(string deviceName)
     {
