@@ -107,7 +107,7 @@ internal sealed class CompositionPresenter : IDisposable
         _context = _device.ImmediateContext;
         _dxgiDevice = _device.QueryInterface<IDXGIDevice>();
         _compositionDevice = DComp.DCompositionCreateDevice<IDCompositionDevice>(_dxgiDevice);
-        _compositionDevice.CreateTargetForHwnd(windowHandle, RawBool.False, out IDCompositionTarget compositionTarget).CheckError();
+        _compositionDevice.CreateTargetForHwnd(windowHandle, new RawBool(false), out IDCompositionTarget compositionTarget).CheckError();
         _compositionTarget = compositionTarget;
         _compositionDevice.CreateVisual(out IDCompositionVisual visual).CheckError();
         _visual = visual;

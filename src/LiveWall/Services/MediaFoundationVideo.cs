@@ -142,10 +142,7 @@ internal sealed class MediaFoundationVideo : IDisposable
             }
 
             using IMFMediaBuffer buffer = sample.ConvertToContiguousBuffer();
-            IntPtr pointer = IntPtr.Zero;
-            int maximumLength = 0;
-            int currentLength = 0;
-            buffer.Lock(ref pointer, ref maximumLength, ref currentLength);
+            buffer.Lock(out IntPtr pointer, out int maximumLength, out int currentLength);
             try
             {
                 if (currentLength <= 0)
