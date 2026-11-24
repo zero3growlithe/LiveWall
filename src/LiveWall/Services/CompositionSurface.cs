@@ -94,6 +94,8 @@ public sealed class CompositionSurface : IWallpaperSurface
     private string _rendererDescription = "not created";
     private int _windowWidth;
     private int _windowHeight;
+    private double _devicePixelsPerDip = 1.0;
+    private bool _firstFrameLogged;
     private long _framesPresented;
     private volatile bool _renderThreadAlive;
 
@@ -201,11 +203,20 @@ public sealed class CompositionSurface : IWallpaperSurface
                 dpi = DefaultDpi;
             }
 
-            double devicePixelsPerDip = (double)PixelsPerDipBase / dpi;
+            // Measured behaviour on build 26200: DirectComposition does NOT rescale a visual by the target
+            // window's DPI, so one DIP is one device pixel here. Dividing by (dpi/96) made the wallpaper cover
+            // only part of a scaled monitor, which is exactly the "does not fill the screen" report.
+            double devicePixelsPerDip = 1.0;
+            _devicePixelsPerDip = devicePixelsPerDip;
+
+            RECT clientRectangle;
+            string clientSize = NativeMethods.GetClientRect(_windowHandle, out clientRectangle)
+                ? string.Format(CultureInfo.InvariantCulture, "{0}x{1}", clientRectangle.Width, clientRectangle.Height)
+                : "unknown";
 
             AppLog.Write(string.Format(
                 CultureInfo.InvariantCulture,
-                "composition surface attached for {0} at {1},{2},{3}x{4} under host 0x{5:X} (window 0x{6:X}, dpi {7})",
+                "composition surface attached for {0} at {1},{2},{3}x{4} under host 0x{5:X} (window 0x{6:X}, dpi {7}, client {8})",
                 _deviceName,
                 monitorRectangle.Left,
                 monitorRectangle.Top,
@@ -213,7 +224,8 @@ public sealed class CompositionSurface : IWallpaperSurface
                 _windowHeight,
                 host.ParentWindow.ToInt64(),
                 _windowHandle.ToInt64(),
-                dpi));
+                dpi,
+                clientSize));
 
             int width = _windowWidth;
             int height = _windowHeight;
@@ -244,6 +256,7 @@ public sealed class CompositionSurface : IWallpaperSurface
         }
 
         _source = config == null ? new WallpaperSource() : config;
+        _firstFrameLogged = false;
         StopSlideshow();
 
         WallpaperStretch stretch = _source.Stretch;
@@ -606,6 +619,7 @@ public sealed class CompositionSurface : IWallpaperSurface
                     try
                     {
                         presenter.ShowPixels(frame.Pixels, frame.Width, frame.Height, frame.Stretch);
+                        LogFirstFrame(frame.Width, frame.Height, frame.Stretch, frame.Description);
                         Interlocked.Increment(ref _framesPresented);
                         SetDescription(frame.Description);
                     }
@@ -660,6 +674,7 @@ public sealed class CompositionSurface : IWallpaperSurface
                     try
                     {
                         presenter.ShowPixels(pixels, video.Width, video.Height, stretch);
+                        LogFirstFrame(video.Width, video.Height, stretch, _description);
                         Interlocked.Increment(ref _framesPresented);
                     }
                     catch (Exception exception)
@@ -699,6 +714,32 @@ public sealed class CompositionSurface : IWallpaperSurface
                 presenter.Dispose();
             }
         }
+    }
+
+    /// <summary>
+    /// One line per source that records the geometry of the first presented frame: it is the only way to tell a
+    /// wrong visual transform from a decoder that reports the wrong frame size, without a Windows machine.
+    /// </summary>
+    private void LogFirstFrame(int sourceWidth, int sourceHeight, WallpaperStretch stretch, string description)
+    {
+        if (_firstFrameLogged)
+        {
+            return;
+        }
+
+        _firstFrameLogged = true;
+        AppLog.Write(string.Format(
+            CultureInfo.InvariantCulture,
+            "first frame presented for {0}: {1} — source {2}x{3} -> window {4}x{5} px, dpiScale {6:F3}, {7}, {8}",
+            _deviceName,
+            description,
+            sourceWidth,
+            sourceHeight,
+            _windowWidth,
+            _windowHeight,
+            _devicePixelsPerDip,
+            stretch,
+            _hostDescription));
     }
 
     /// <summary>Sleeps until the next sample is due, so a video plays at its own speed instead of decoding flat out.</summary>

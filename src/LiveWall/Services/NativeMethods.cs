@@ -147,6 +147,12 @@ internal static class NativeMethods
     [DllImport("user32.dll")]
     internal static extern int GetDpiForWindow(IntPtr windowHandle);
 
+    /// <summary>DPI_AWARENESS_CONTEXT_UNAWARE — a window created under it is treated as 96 DPI.</summary>
+    internal static readonly IntPtr DpiAwarenessContextUnaware = new IntPtr(-1);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern IntPtr SetThreadDpiAwarenessContext(IntPtr dpiContext);
+
     [StructLayout(LayoutKind.Sequential)]
     internal struct NativePoint
     {
