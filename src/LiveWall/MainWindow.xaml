@@ -123,6 +123,15 @@
                             <TextBlock x:Name="VolumeValueTextBlock" Text="Volume 0%" Margin="0,10,0,2" />
                             <Slider x:Name="VolumeSlider" Minimum="0" Maximum="100" Value="0" TickFrequency="5"
                                     IsSnapToTickEnabled="True" ValueChanged="VolumeSlider_ValueChanged" />
+
+                            <TextBlock Text="FRAME RATE" FontSize="11" FontWeight="SemiBold" Foreground="#6A6A75" Margin="0,10,0,4" />
+                            <ComboBox x:Name="VideoFrameRateComboBox" SelectionChanged="EditorOption_Changed">
+                                <ComboBoxItem Content="30 fps — recommended for a wallpaper" Tag="30" />
+                                <ComboBoxItem Content="60 fps" Tag="60" />
+                                <ComboBoxItem Content="Every decoded frame (most CPU)" Tag="0" />
+                            </ComboBox>
+                            <CheckBox x:Name="VideoConvertCheckBox" Content="Convert colours in LiveWall (skips the codec's converter)"
+                                      Margin="0,8,0,0" Checked="EditorOption_Changed" Unchecked="EditorOption_Changed" />
                         </StackPanel>
 
                         <StackPanel x:Name="VideoFolderPanel" Margin="0,0,0,12">

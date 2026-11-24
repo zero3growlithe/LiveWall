@@ -69,6 +69,9 @@ public sealed class CompositionSurface : IWallpaperSurface
     }
 
     private readonly string _deviceName;
+    /// <summary>How long a covered monitor may stay paused before its video decoder is closed (memory).</summary>
+    private const double PausedDecoderReleaseSeconds = 15.0;
+
     private readonly WallpaperScaleMode _scaleMode;
     private readonly Dispatcher _dispatcher;
     private readonly object _sync = new object();
@@ -109,6 +112,15 @@ public sealed class CompositionSurface : IWallpaperSurface
     private byte[] _imageBufferA = Array.Empty<byte>();
     private byte[] _imageBufferB = Array.Empty<byte>();
     private bool _imageBufferFlip;
+
+    // Video cost accounting, written by the render thread only and read by the diagnostics.
+    private long _videoFrameCount;
+    private double _videoDecodeSeconds;
+    private double _videoPresentSeconds;
+    private string _videoCostDescription = "not measured";
+    private int _videoFrameRateLimit = 30;
+    private VideoPixelMode _videoPixelMode = VideoPixelMode.DecoderConvertsToRgb;
+    private string? _resumeVideoPath;
     private int _appliedBackgroundColour = -1;
     private ContentBox _contentBox;
     private long _framesPresented;
@@ -314,6 +326,13 @@ public sealed class CompositionSurface : IWallpaperSurface
 
         _videoQueue = null;
         _cropBuffer = Array.Empty<byte>();
+        _videoFrameRateLimit = _source.VideoFrameRateLimit;
+        _videoPixelMode = _source.VideoPixelMode;
+        lock (_sync)
+        {
+            _resumeVideoPath = null;
+        }
+
         RequestLargeObjectHeapCompaction();
 
         switch (_source.Kind)
@@ -412,7 +431,8 @@ public sealed class CompositionSurface : IWallpaperSurface
             _rendererDescription,
             _framesPresented,
             _hostDescription,
-            _description);
+            _description)
+            + " | video cost=" + _videoCostDescription;
     }
 
     // ── Source handling (UI thread) ───────────────────────────────────────────────────────────────────────
@@ -449,6 +469,7 @@ public sealed class CompositionSurface : IWallpaperSurface
         lock (_sync)
         {
             _pendingFrame = null;
+            _resumeVideoPath = null;
             _pendingVideo = new VideoCommand(filePath, _source.Stretch, "video " + Path.GetFileName(filePath));
             Monitor.PulseAll(_sync);
         }
@@ -476,6 +497,7 @@ public sealed class CompositionSurface : IWallpaperSurface
         lock (_sync)
         {
             _pendingFrame = null;
+            _resumeVideoPath = null;
             _pendingVideo = new VideoCommand(firstFile, _source.Stretch, DescribeQueuedVideo(queue, firstFile));
             Monitor.PulseAll(_sync);
         }
@@ -765,6 +787,9 @@ public sealed class CompositionSurface : IWallpaperSurface
         MediaFoundationVideo? video = null;
         long firstSampleTime = -1;
         long playbackStartTimestamp = 0;
+        long lastPresentTimestamp = 0;
+        long pausedSinceTimestamp = 0;
+        string? currentVideoPath = null;
 
         try
         {
@@ -808,9 +833,12 @@ public sealed class CompositionSurface : IWallpaperSurface
                     else
                     {
                         MediaFoundationVideo candidate = new MediaFoundationVideo();
-                        if (candidate.Open(videoCommand.FilePath))
+                        if (candidate.Open(videoCommand.FilePath, _videoPixelMode))
                         {
                             video = candidate;
+                            currentVideoPath = videoCommand.FilePath;
+                            pausedSinceTimestamp = 0;
+                            lastPresentTimestamp = 0;
                             _isVideoOpen = true;
                             _videoGeometryLogged = false;
                             _firstVideoFrameDumped = false;
@@ -836,6 +864,27 @@ public sealed class CompositionSurface : IWallpaperSurface
                     }
                 }
 
+                if (!paused && video == null)
+                {
+                    string? resumePath = null;
+                    lock (_sync)
+                    {
+                        resumePath = _resumeVideoPath;
+                        _resumeVideoPath = null;
+                    }
+
+                    if (!string.IsNullOrEmpty(resumePath))
+                    {
+                        lock (_sync)
+                        {
+                            _pendingVideo = new VideoCommand(resumePath, stretch, "video " + Path.GetFileName(resumePath));
+                            Monitor.PulseAll(_sync);
+                        }
+
+                        continue;
+                    }
+                }
+
                 if (frame != null)
                 {
                     ReleaseVideo(ref video);
@@ -858,12 +907,36 @@ public sealed class CompositionSurface : IWallpaperSurface
                     if (paused)
                     {
                         // Paused means paused: the decoder is not pulled, so the last frame stays on screen
-                        // and no CPU or GPU time is spent on the video.
+                        // and no CPU or GPU time is spent on the video. A long pause also gives the decoder
+                        // itself back, because a covered monitor does not need tens of megabytes of reference
+                        // frames sitting in RAM; the clip restarts from its beginning when the monitor returns.
+                        if (pausedSinceTimestamp == 0)
+                        {
+                            pausedSinceTimestamp = Stopwatch.GetTimestamp();
+                        }
+                        else if ((Stopwatch.GetTimestamp() - pausedSinceTimestamp) / (double)Stopwatch.Frequency
+                            >= PausedDecoderReleaseSeconds)
+                        {
+                            lock (_sync)
+                            {
+                                _resumeVideoPath = currentVideoPath;
+                            }
+
+                            ReleaseVideo(ref video);
+                            currentVideoPath = null;
+                            pausedSinceTimestamp = 0;
+                            SetDescription(_description + " (decoder released while paused)");
+                        }
+
                         Thread.Sleep(30);
                         continue;
                     }
 
+                    pausedSinceTimestamp = 0;
+
+                    long decodeStart = Stopwatch.GetTimestamp();
                     byte[]? pixels = video.ReadFrame(out long sampleTime);
+                    double decodeSeconds = (Stopwatch.GetTimestamp() - decodeStart) / (double)Stopwatch.Frequency;
                     if (pixels == null)
                     {
                         if (sampleTime < 0)
@@ -930,11 +1003,35 @@ public sealed class CompositionSurface : IWallpaperSurface
                             presented = CropToBox(pixels, video.Width, _contentBox);
                         }
 
-                        presenter.ShowPixels(presented, presentedWidth, presentedHeight, stretch);
-                        LogFirstFrame(presenter, presentedWidth, presentedHeight, stretch, _description);
-                        LogVideoGeometry(video);
-                        DumpFirstVideoFrame(pixels, video.Width, video.Height);
-                        Interlocked.Increment(ref _framesPresented);
+                        // Every frame has to be decoded to keep the stream in order, but pushing all of them to
+                        // the screen is optional: a wallpaper at 30 fps looks the same as one at 60 and costs
+                        // half the uploads.
+                        bool presentThisFrame = true;
+                        if (_videoFrameRateLimit > 0 && lastPresentTimestamp != 0)
+                        {
+                            double sinceLastPresent = (Stopwatch.GetTimestamp() - lastPresentTimestamp)
+                                / (double)Stopwatch.Frequency;
+                            presentThisFrame = sinceLastPresent >= (1.0 / _videoFrameRateLimit);
+                        }
+
+                        if (presentThisFrame)
+                        {
+                            long presentStart = Stopwatch.GetTimestamp();
+                            presenter.ShowPixels(presented, presentedWidth, presentedHeight, stretch);
+                            lastPresentTimestamp = Stopwatch.GetTimestamp();
+                            _videoPresentSeconds += (lastPresentTimestamp - presentStart) / (double)Stopwatch.Frequency;
+                            LogFirstFrame(presenter, presentedWidth, presentedHeight, stretch, _description);
+                            LogVideoGeometry(video);
+                            DumpFirstVideoFrame(pixels, video.Width, video.Height);
+                            Interlocked.Increment(ref _framesPresented);
+                        }
+
+                        _videoDecodeSeconds += decodeSeconds;
+                        _videoFrameCount++;
+                        if ((_videoFrameCount % 60) == 0)
+                        {
+                            SummarizeVideoCost();
+                        }
                     }
                     catch (Exception exception)
                     {
@@ -1246,6 +1343,32 @@ public sealed class CompositionSurface : IWallpaperSurface
     }
 
     /// <summary>Sleeps until the next sample is due, so a video plays at its own speed instead of decoding flat out.</summary>
+    /// <summary>
+    /// Turns the per-frame stopwatch sums into one readable line: how much of each frame's time went into
+    /// decoding and how much into getting it onto the screen. Without it "it uses a lot of CPU" has no answer.
+    /// </summary>
+    private void SummarizeVideoCost()
+    {
+        long frames = _videoFrameCount;
+        if (frames <= 0)
+        {
+            _videoCostDescription = "not measured";
+            return;
+        }
+
+        double decodeMilliseconds = _videoDecodeSeconds * 1000.0 / frames;
+        double presentMilliseconds = _videoPresentSeconds * 1000.0 / frames;
+        double frameMilliseconds = decodeMilliseconds + presentMilliseconds;
+        double framesPerSecond = frameMilliseconds > 0 ? 1000.0 / frameMilliseconds : 0.0;
+        _videoCostDescription = string.Format(
+            CultureInfo.InvariantCulture,
+            "{0:F1} fps, decode {1:F1} ms + present {2:F1} ms per frame, {3:F1}% of one core",
+            framesPerSecond,
+            decodeMilliseconds,
+            presentMilliseconds,
+            frameMilliseconds * framesPerSecond / 10.0);
+    }
+
     private static void WaitForPlaybackTiming(long sampleTime, long firstSampleTime, long playbackStartTimestamp)
     {
         double dueSeconds = (sampleTime - firstSampleTime) / 10000000.0;

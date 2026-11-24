@@ -219,6 +219,8 @@ public partial class MainWindow : Window
             ShuffleCheckBox.IsChecked = source.Shuffle;
             VideoSubfoldersCheckBox.IsChecked = source.IncludeSubfolders;
             SelectComboItemByTag(VideoOrderComboBox, source.VideoOrder.ToString());
+            SelectComboItemByTag(VideoFrameRateComboBox, source.VideoFrameRateLimit.ToString(CultureInfo.InvariantCulture));
+            VideoConvertCheckBox.IsChecked = source.VideoPixelMode == VideoPixelMode.ConvertInApp;
             IntervalSlider.Value = source.SlideshowIntervalSeconds;
             MuteCheckBox.IsChecked = source.MuteVideo;
             VolumeSlider.Value = source.VideoVolume;
@@ -254,6 +256,10 @@ public partial class MainWindow : Window
         }
 
         source.VideoOrder = ParseVideoOrder();
+        source.VideoFrameRateLimit = ParseVideoFrameRateLimit();
+        source.VideoPixelMode = VideoConvertCheckBox.IsChecked == true
+            ? VideoPixelMode.ConvertInApp
+            : VideoPixelMode.DecoderConvertsToRgb;
 
         source.BackgroundColor = string.IsNullOrWhiteSpace(ColorTextBox.Text) ? "#000000" : ColorTextBox.Text.Trim();
         source.IncludeSubfolders = kind == WallpaperKind.VideoFolder
@@ -672,6 +678,19 @@ public partial class MainWindow : Window
         }
 
         return WallpaperScaleMode.Pixels;
+    }
+
+    private int ParseVideoFrameRateLimit()
+    {
+        ComboBoxItem? item = VideoFrameRateComboBox.SelectedItem as ComboBoxItem;
+        string? tag = item == null ? null : item.Tag as string;
+        int limit;
+        if (tag != null && int.TryParse(tag, NumberStyles.Integer, CultureInfo.InvariantCulture, out limit) && limit >= 0)
+        {
+            return limit;
+        }
+
+        return 30;
     }
 
     private VideoPlaybackOrder ParseVideoOrder()

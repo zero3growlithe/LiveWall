@@ -52,6 +52,23 @@ lets every monitor have its own wallpaper, and automatically pauses playback whi
 | `Skip to the next picture / video` | Steps a slideshow or video folder forward at once. |
 | `Wallpaper scale` | `pixels as DIPs (no DPI adjustment)` is the default and the setting that draws 1:1 on a 100 % display. |
 
+## CPU
+
+A wallpaper video has to be decoded, and decoding is the expensive part: on a 1080p clip the decoder alone
+can take a fifth of a core, and asking Media Foundation for RGB adds a whole extra full-frame pass over every
+frame. Two settings keep it in check, both in the `VIDEO` block:
+
+- **Frame rate** — `30 fps` by default. Every decoded frame still costs its decode, but only the ones that
+  are actually shown cost an upload and a present, so a 60 fps clip costs half of that half.
+- **Convert colours in LiveWall** — off by default. When on, LiveWall asks the decoder for its native NV12
+  output and converts it itself, which removes Media Foundation's video-processor stage from the graph. If
+  the decoder offers nothing convertible, LiveWall logs the fallback and goes back to RGB by itself.
+
+`Diagnostics…` prints a `video cost=` figure per monitor (`fps`, decode ms, present ms per frame, and the
+share of one core that adds up to), so the effect of both settings is measurable instead of assumed.
+A covered monitor also releases its decoder after 15 seconds, and the clip restarts when the monitor comes
+back — no decoder, no CPU and no tens of megabytes of reference frames while nobody is looking.
+
 ## Memory
 
 The renderer keeps **one** decoded frame buffer, one crop buffer and a pair of image buffers per monitor and

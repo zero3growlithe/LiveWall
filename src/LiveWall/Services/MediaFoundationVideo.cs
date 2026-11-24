@@ -101,7 +101,30 @@ internal sealed class MediaFoundationVideo : IDisposable
         }
     }
 
-    public bool Open(string path)
+    /// <summary>
+    /// Opens the file and negotiates a pixel format. <see cref="VideoPixelMode.ConvertInApp"/> keeps the
+    /// decoder's own YUV output and converts it here, which removes the video-processor stage Media Foundation
+    /// would otherwise insert; when the decoder offers nothing LiveWall can convert, the call repeats itself
+    /// with the safe RGB request instead of failing.
+    /// </summary>
+    public bool Open(string path, LiveWall.Models.VideoPixelMode pixelMode)
+    {
+        if (OpenCore(path, pixelMode))
+        {
+            return true;
+        }
+
+        if (pixelMode == LiveWall.Models.VideoPixelMode.DecoderConvertsToRgb)
+        {
+            return false;
+        }
+
+        AppLog.Write("colour conversion in LiveWall failed for " + path + " (" + FailureReason
+            + ") — falling back to the decoder's own RGB conversion");
+        return OpenCore(path, LiveWall.Models.VideoPixelMode.DecoderConvertsToRgb);
+    }
+
+    private bool OpenCore(string path, LiveWall.Models.VideoPixelMode pixelMode)
     {
         Close();
 
@@ -109,8 +132,9 @@ internal sealed class MediaFoundationVideo : IDisposable
         {
             EnsureMediaFoundationStarted();
 
+            bool askForRgb = pixelMode == LiveWall.Models.VideoPixelMode.DecoderConvertsToRgb;
             _readerAttributes = MediaFactory.MFCreateAttributes(2);
-            _readerAttributes.Set(EnableVideoProcessingKey, 1u);
+            _readerAttributes.Set(EnableVideoProcessingKey, askForRgb ? 1u : 0u);
 
             _reader = MediaFactory.MFCreateSourceReaderFromURL(path, _readerAttributes);
             _reader.SetStreamSelection(SourceReaderIndex.AllStreams, false);
@@ -121,18 +145,23 @@ internal sealed class MediaFoundationVideo : IDisposable
             try
             {
                 using IMFAttributes readerStore = _reader.QueryInterface<IMFAttributes>();
-                readerStore.Set(EnableVideoProcessingKey, 1u);
+                readerStore.Set(EnableVideoProcessingKey, askForRgb ? 1u : 0u);
             }
             catch (Exception exception)
             {
-                AppLog.Write("could not enable video processing on the reader: " + exception.Message);
+                AppLog.Write("could not set video processing on the reader: " + exception.Message);
             }
 
-            using IMFMediaType outputType = MediaFactory.MFCreateMediaType();
-            using IMFAttributes outputAttributes = outputType.QueryInterface<IMFAttributes>();
-            outputAttributes.Set(MediaTypeMajorTypeKey, MediaTypeVideoGuid);
-            outputAttributes.Set(MediaTypeSubTypeKey, VideoFormatRgb32Guid);
-            _reader.SetCurrentMediaType(SourceReaderIndex.FirstVideoStream, outputType);
+            if (askForRgb)
+            {
+                // RGB32 makes Media Foundation insert its video-processor stage: one extra full-frame pass
+                // over every frame, but a pixel format that needs no work on our side.
+                using IMFMediaType outputType = MediaFactory.MFCreateMediaType();
+                using IMFAttributes outputAttributes = outputType.QueryInterface<IMFAttributes>();
+                outputAttributes.Set(MediaTypeMajorTypeKey, MediaTypeVideoGuid);
+                outputAttributes.Set(MediaTypeSubTypeKey, VideoFormatRgb32Guid);
+                _reader.SetCurrentMediaType(SourceReaderIndex.FirstVideoStream, outputType);
+            }
 
             using IMFMediaType currentType = _reader.GetCurrentMediaType(SourceReaderIndex.FirstVideoStream);
             using IMFAttributes currentAttributes = currentType.QueryInterface<IMFAttributes>();

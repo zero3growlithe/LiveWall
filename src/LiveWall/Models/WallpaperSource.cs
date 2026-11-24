@@ -25,6 +25,15 @@ public sealed class WallpaperSource
     /// <summary>Play order for a <see cref="WallpaperKind.VideoFolder"/> source.</summary>
     public VideoPlaybackOrder VideoOrder { get; set; } = VideoPlaybackOrder.Sequential;
 
+    /// <summary>
+    /// Highest number of frames per second pushed to the screen; 0 pushes every decoded frame. Decoding still
+    /// has to run for every frame, this only saves the per-frame upload and present.
+    /// </summary>
+    public int VideoFrameRateLimit { get; set; } = 30;
+
+    /// <summary>Who converts the decoded frame to RGB (see <see cref="VideoPixelMode"/>).</summary>
+    public VideoPixelMode VideoPixelMode { get; set; } = VideoPixelMode.DecoderConvertsToRgb;
+
     public WallpaperStretch Stretch { get; set; } = WallpaperStretch.Fill;
 
     public string BackgroundColor { get; set; } = "#000000";
