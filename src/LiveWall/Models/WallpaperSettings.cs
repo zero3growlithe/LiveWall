@@ -29,6 +29,12 @@ public sealed class WallpaperSettings
     public bool StartWithWindows { get; set; }
 
     /// <summary>
+    /// Light or dark palette for the settings window and its dialogs (see <see cref="AppTheme"/>). Applied in
+    /// <c>App.OnStartup</c> before any window is created, and swapped live when the selector changes.
+    /// </summary>
+    public AppTheme Theme { get; set; } = AppTheme.Light;
+
+    /// <summary>
     /// Which drawing stack paints the wallpaper (see <see cref="RendererPreference"/>). DirectComposition is
     /// the default because it is the only path the shell composes on Windows 11 24H2+ (build 26100+).
     /// </summary>

@@ -6,10 +6,13 @@
         Width="392"
         ResizeMode="NoResize"
         ShowInTaskbar="False"
-        Background="#F7F7F9"
-        Foreground="#1E1E22"
+        Background="{DynamicResource WindowBackground}"
+        Foreground="{DynamicResource TextPrimary}"
         WindowStartupLocation="CenterOwner">
 
+    <!-- The gradients and cursors in this window are colour DATA (hue strip, saturation/value square, alpha
+         checker), not theme chrome: they have to stay literal, which is why this is the one view that still
+         carries hex values. Every surface around them comes from the palette. -->
     <Grid Margin="14">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
@@ -23,7 +26,7 @@
 
         <!-- Saturation / value square -->
         <Border Grid.Row="0"
-                BorderBrush="#C9C9D1"
+                BorderBrush="{DynamicResource InputBorder}"
                 BorderThickness="1">
             <Grid x:Name="SvGrid"
                   Height="170"
@@ -63,7 +66,7 @@
         <Border Grid.Row="1"
                 Margin="0,8,0,0"
                 Height="20"
-                BorderBrush="#C9C9D1"
+                BorderBrush="{DynamicResource InputBorder}"
                 BorderThickness="1">
             <Grid x:Name="HueGrid"
                   ClipToBounds="True"
@@ -98,7 +101,7 @@
         <Border Grid.Row="2"
                 Margin="0,6,0,0"
                 Height="20"
-                BorderBrush="#C9C9D1"
+                BorderBrush="{DynamicResource InputBorder}"
                 BorderThickness="1">
             <Grid x:Name="AlphaGrid"
                   ClipToBounds="True"
@@ -131,7 +134,7 @@
                        Text="#RRGGBB / #AARRGGBB"
                        FontSize="11"
                        FontWeight="SemiBold"
-                       Foreground="#6A6A75"
+                       Foreground="{DynamicResource TextSecondary}"
                        VerticalAlignment="Center" />
             <TextBox x:Name="HexBox"
                      Grid.Column="1"
@@ -145,13 +148,13 @@
                     Width="28"
                     Height="20"
                     Margin="8,0,0,0"
-                    BorderBrush="#C9C9D1"
+                    BorderBrush="{DynamicResource InputBorder}"
                     BorderThickness="1" />
             <TextBlock x:Name="AlphaText"
                        Grid.Column="3"
                        Margin="8,0,0,0"
                        FontSize="11"
-                       Foreground="#6A6A75"
+                       Foreground="{DynamicResource TextSecondary}"
                        VerticalAlignment="Center" />
         </Grid>
 

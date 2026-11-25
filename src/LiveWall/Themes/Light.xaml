@@ -1,0 +1,58 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- Light palette. Every key in this file must also exist in the other palette with the same
+         spelling: ThemeManager swaps the whole dictionary at runtime, so a key that is present here and
+         missing there throws the moment the user switches the theme. Add brushes to BOTH files. -->
+
+    <SolidColorBrush x:Key="WindowBackground" Color="#F7F7F9" />
+    <SolidColorBrush x:Key="PanelBackground" Color="#FFFFFF" />
+    <SolidColorBrush x:Key="PanelBorder" Color="#E1E1E6" />
+    <SolidColorBrush x:Key="ListBackground" Color="#FBFBFC" />
+    <SolidColorBrush x:Key="TextPrimary" Color="#1E1E22" />
+    <SolidColorBrush x:Key="TextSecondary" Color="#6A6A75" />
+    <SolidColorBrush x:Key="TextMuted" Color="#8A8A95" />
+    <SolidColorBrush x:Key="InputBackground" Color="#FFFFFF" />
+    <SolidColorBrush x:Key="InputBorder" Color="#C9C9D1" />
+    <SolidColorBrush x:Key="InputReadOnlyBackground" Color="#F2F2F5" />
+    <SolidColorBrush x:Key="ControlBackground" Color="#FAFAFB" />
+    <SolidColorBrush x:Key="ControlBorder" Color="#C9C9D1" />
+    <SolidColorBrush x:Key="ControlHoverBackground" Color="#EFEFF3" />
+    <SolidColorBrush x:Key="ControlPressedBackground" Color="#E3E3E9" />
+    <SolidColorBrush x:Key="ControlDisabledBackground" Color="#F2F2F5" />
+    <SolidColorBrush x:Key="ControlDisabledText" Color="#9A9AA5" />
+    <SolidColorBrush x:Key="AccentBackground" Color="#2F6FEB" />
+    <SolidColorBrush x:Key="AccentText" Color="#FFFFFF" />
+    <SolidColorBrush x:Key="SelectionBackground" Color="#DCE7FB" />
+    <SolidColorBrush x:Key="SelectionText" Color="#14213A" />
+    <SolidColorBrush x:Key="HoverBackground" Color="#EFEFF3" />
+    <SolidColorBrush x:Key="TrackBackground" Color="#E1E1E6" />
+    <SolidColorBrush x:Key="ThumbBackground" Color="#FFFFFF" />
+    <SolidColorBrush x:Key="ThumbHoverBackground" Color="#EEF3FF" />
+    <SolidColorBrush x:Key="ThumbBorder" Color="#A9A9B4" />
+    <SolidColorBrush x:Key="CheckBoxBorder" Color="#A9A9B4" />
+    <SolidColorBrush x:Key="CheckMark" Color="#2F6FEB" />
+    <SolidColorBrush x:Key="Separator" Color="#E1E1E6" />
+    <SolidColorBrush x:Key="MenuBackground" Color="#FFFFFF" />
+    <SolidColorBrush x:Key="MenuBorder" Color="#C9C9D1" />
+    <SolidColorBrush x:Key="ToolTipBackground" Color="#FFFFFF" />
+    <SolidColorBrush x:Key="ToolTipBorder" Color="#C9C9D1" />
+
+    <!-- The system brushes stock templates fall back to (scrollbar internals, a ComboBox
+         edit box, native tooltips, a stray Panel). Left alone they stay white in a dark
+         window, because they do not read the palette. -->
+    <SolidColorBrush x:Key="{x:Static SystemColors.WindowBrushKey}" Color="#F7F7F9" />
+    <SolidColorBrush x:Key="{x:Static SystemColors.WindowTextBrushKey}" Color="#1E1E22" />
+    <SolidColorBrush x:Key="{x:Static SystemColors.ControlBrushKey}" Color="#FAFAFB" />
+    <SolidColorBrush x:Key="{x:Static SystemColors.ControlTextBrushKey}" Color="#1E1E22" />
+    <SolidColorBrush x:Key="{x:Static SystemColors.GrayTextBrushKey}" Color="#8A8A95" />
+    <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="#2F6FEB" />
+    <SolidColorBrush x:Key="{x:Static SystemColors.HighlightTextBrushKey}" Color="#FFFFFF" />
+    <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightBrushKey}" Color="#EFEFF3" />
+    <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightTextBrushKey}" Color="#1E1E22" />
+    <SolidColorBrush x:Key="{x:Static SystemColors.MenuBrushKey}" Color="#FFFFFF" />
+    <SolidColorBrush x:Key="{x:Static SystemColors.MenuTextBrushKey}" Color="#1E1E22" />
+    <SolidColorBrush x:Key="{x:Static SystemColors.InfoBrushKey}" Color="#FFFFFF" />
+    <SolidColorBrush x:Key="{x:Static SystemColors.InfoTextBrushKey}" Color="#1E1E22" />
+
+</ResourceDictionary>

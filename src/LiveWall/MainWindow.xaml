@@ -4,7 +4,7 @@
         Title="LiveWall — desktop wallpaper"
         Height="660" Width="960"
         MinHeight="520" MinWidth="820"
-        Background="#F7F7F9" Foreground="#1E1E22"
+        Background="{DynamicResource WindowBackground}" Foreground="{DynamicResource TextPrimary}"
         Closing="Window_Closing"
         Deactivated="Window_Deactivated">
     <Grid Margin="14">
@@ -18,6 +18,12 @@
         <DockPanel Grid.Row="0" Margin="0,0,0,12" LastChildFill="False">
             <TextBlock DockPanel.Dock="Left" Text="LiveWall" FontSize="20" FontWeight="Bold" VerticalAlignment="Center" />
             <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                <ComboBox x:Name="ThemeComboBox" Width="118" VerticalAlignment="Center"
+                          ToolTip="Window theme — swaps instantly, no restart"
+                          SelectionChanged="ThemeComboBox_SelectionChanged">
+                    <ComboBoxItem Content="Light theme" Tag="Light" />
+                    <ComboBoxItem Content="Dark theme" Tag="Dark" />
+                </ComboBox>
                 <Button x:Name="TogglePauseButton" Content="Pause all" Width="112" Padding="8,5" Margin="6,0,0,0" Click="TogglePause_Click" />
                 <Button Content="Diagnostics…" Width="112" Padding="8,5" Margin="6,0,0,0" Click="Diagnostics_Click" />
                 <Button Content="Apply" Width="90" Padding="8,5" Margin="6,0,0,0" FontWeight="SemiBold" Click="Apply_Click" />
@@ -32,7 +38,7 @@
             </Grid.ColumnDefinitions>
 
             <!-- Monitors -->
-            <Border Grid.Column="0" Background="#FFFFFF" BorderBrush="#E1E1E6" BorderThickness="1" CornerRadius="6" Padding="10" Margin="0,0,12,0">
+            <Border Grid.Column="0" Background="{DynamicResource PanelBackground}" BorderBrush="{DynamicResource PanelBorder}" BorderThickness="1" CornerRadius="6" Padding="10" Margin="0,0,12,0">
                 <Grid>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
@@ -41,7 +47,7 @@
                         <RowDefinition Height="*" />
                     </Grid.RowDefinitions>
                     <StackPanel Grid.Row="0" Margin="0,0,0,12">
-                        <TextBlock Text="PROFILES" FontSize="11" FontWeight="SemiBold" Foreground="#6A6A75" Margin="0,0,0,6" />
+                        <TextBlock Text="PROFILES" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,6" />
                         <ComboBox x:Name="ProfileComboBox" Margin="0,0,0,6" ToolTip="Saved setups, one entry per profile"
                                   SelectionChanged="ProfileComboBox_SelectionChanged" />
                         <TextBox x:Name="ProfileNameTextBox" Margin="0,0,0,6" ToolTip="Name used when saving a profile" />
@@ -51,16 +57,16 @@
                             <Button Content="Delete" Width="70" Padding="6,4" Margin="6,0,0,0" Click="DeleteProfile_Click" />
                         </StackPanel>
                     </StackPanel>
-                    <TextBlock Grid.Row="1" Text="MONITORS" FontSize="11" FontWeight="SemiBold" Foreground="#6A6A75" Margin="0,0,0,8" />
+                    <TextBlock Grid.Row="1" Text="MONITORS" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,8" />
                     <CheckBox Grid.Row="2" x:Name="SameForAllCheckBox" Content="Same wallpaper on every monitor"
                               Margin="0,0,0,8" Checked="SameForAllCheckBox_Changed" Unchecked="SameForAllCheckBox_Changed" />
-                    <ListBox Grid.Row="3" x:Name="MonitorList" Background="#FBFBFC" BorderBrush="#E1E1E6"
+                    <ListBox Grid.Row="3" x:Name="MonitorList" Background="{DynamicResource ListBackground}" BorderBrush="{DynamicResource PanelBorder}"
                              SelectionChanged="MonitorList_SelectionChanged">
                         <ListBox.ItemTemplate>
                             <DataTemplate>
                                 <StackPanel Margin="0,4">
                                     <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold" />
-                                    <TextBlock Text="{Binding StatusLine}" FontSize="11" Foreground="#6A6A75" TextWrapping="Wrap" />
+                                    <TextBlock Text="{Binding StatusLine}" FontSize="11" Foreground="{DynamicResource TextSecondary}" TextWrapping="Wrap" />
                                 </StackPanel>
                             </DataTemplate>
                         </ListBox.ItemTemplate>
@@ -69,12 +75,12 @@
             </Border>
 
             <!-- Editor -->
-            <Border Grid.Column="1" Background="#FFFFFF" BorderBrush="#E1E1E6" BorderThickness="1" CornerRadius="6" Padding="14">
+            <Border Grid.Column="1" Background="{DynamicResource PanelBackground}" BorderBrush="{DynamicResource PanelBorder}" BorderThickness="1" CornerRadius="6" Padding="14">
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
                     <StackPanel>
                         <TextBlock x:Name="EditorHeaderTextBlock" FontSize="15" FontWeight="SemiBold" Margin="0,0,0,12" Text="Wallpaper" />
 
-                        <TextBlock Text="Source" FontSize="11" FontWeight="SemiBold" Foreground="#6A6A75" />
+                        <TextBlock Text="Source" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource TextSecondary}" />
                         <ComboBox x:Name="SourceKindComboBox" Margin="0,4,0,12" SelectionChanged="SourceKindComboBox_SelectionChanged">
                             <ComboBoxItem Content="Solid colour" Tag="SolidColor" />
                             <ComboBoxItem Content="Image file" Tag="Image" />
@@ -83,7 +89,7 @@
                             <ComboBoxItem Content="Video folder" Tag="VideoFolder" />
                         </ComboBox>
 
-                        <TextBlock x:Name="PathLabelTextBlock" Text="File" FontSize="11" FontWeight="SemiBold" Foreground="#6A6A75" />
+                        <TextBlock x:Name="PathLabelTextBlock" Text="File" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource TextSecondary}" />
                         <Grid Margin="0,4,0,12">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*" />
@@ -97,7 +103,7 @@
                         <Button x:Name="NextItemButton" Content="Skip to the next picture / video" Width="240"
                                 HorizontalAlignment="Left" Margin="0,0,0,12" Padding="8,4" Click="NextItem_Click" />
 
-                        <TextBlock Text="Scaling" FontSize="11" FontWeight="SemiBold" Foreground="#6A6A75" />
+                        <TextBlock Text="Scaling" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource TextSecondary}" />
                         <ComboBox x:Name="StretchComboBox" Margin="0,4,0,12" SelectionChanged="StretchComboBox_Changed">
                             <ComboBoxItem Content="Fill (crop, no distortion)" Tag="Fill" />
                             <ComboBoxItem Content="Fit (letterbox)" Tag="Fit" />
@@ -106,7 +112,7 @@
                         </ComboBox>
 
                         <StackPanel x:Name="SlideshowPanel" Margin="0,0,0,12">
-                            <TextBlock Text="SLIDESHOW" FontSize="11" FontWeight="SemiBold" Foreground="#6A6A75" />
+                            <TextBlock Text="SLIDESHOW" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource TextSecondary}" />
                             <CheckBox x:Name="SubfoldersCheckBox" Content="Include subfolders" Margin="0,6,0,0"
                                       Checked="EditorOption_Changed" Unchecked="EditorOption_Changed" />
                             <CheckBox x:Name="ShuffleCheckBox" Content="Shuffle order (random sequence)" Margin="0,6,0,0"
@@ -117,14 +123,14 @@
                         </StackPanel>
 
                         <StackPanel x:Name="VideoPanel" Margin="0,0,0,12">
-                            <TextBlock Text="VIDEO" FontSize="11" FontWeight="SemiBold" Foreground="#6A6A75" />
+                            <TextBlock Text="VIDEO" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource TextSecondary}" />
                             <CheckBox x:Name="MuteCheckBox" Content="Mute audio" Margin="0,6,0,0"
                                       Checked="MuteCheckBox_Changed" Unchecked="MuteCheckBox_Changed" />
                             <TextBlock x:Name="VolumeValueTextBlock" Text="Volume 0%" Margin="0,10,0,2" />
                             <Slider x:Name="VolumeSlider" Minimum="0" Maximum="100" Value="0" TickFrequency="5"
                                     IsSnapToTickEnabled="True" ValueChanged="VolumeSlider_ValueChanged" />
 
-                            <TextBlock Text="FRAME RATE" FontSize="11" FontWeight="SemiBold" Foreground="#6A6A75" Margin="0,10,0,4" />
+                            <TextBlock Text="FRAME RATE" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource TextSecondary}" Margin="0,10,0,4" />
                             <ComboBox x:Name="VideoFrameRateComboBox" SelectionChanged="EditorOption_Changed">
                                 <ComboBoxItem Content="30 fps — recommended for a wallpaper" Tag="30" />
                                 <ComboBoxItem Content="60 fps" Tag="60" />
@@ -137,7 +143,7 @@
                         </StackPanel>
 
                         <StackPanel x:Name="VideoFolderPanel" Margin="0,0,0,12">
-                            <TextBlock Text="VIDEO FOLDER" FontSize="11" FontWeight="SemiBold" Foreground="#6A6A75" />
+                            <TextBlock Text="VIDEO FOLDER" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource TextSecondary}" />
                             <ComboBox x:Name="VideoOrderComboBox" Margin="0,6,0,0" SelectionChanged="EditorOption_Changed">
                                 <ComboBoxItem Content="Sequential (name order, then start again)" Tag="Sequential" />
                                 <ComboBoxItem Content="Random sequence (every clip once, reshuffled)" Tag="ShuffledSequence" />
@@ -148,26 +154,28 @@
                         </StackPanel>
 
                         <StackPanel x:Name="ColorPanel" Margin="0,0,0,12">
-                            <TextBlock Text="BACKGROUND COLOUR" FontSize="11" FontWeight="SemiBold" Foreground="#6A6A75" />
+                            <TextBlock Text="BACKGROUND COLOUR" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource TextSecondary}" />
                             <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
-                                <Border x:Name="ColorPreviewBorder" Width="28" Height="26" Background="#000000" BorderBrush="#C9C9D1" BorderThickness="1" />
+                                <!-- Painted from the wallpaper colour itself in code, so the value below is
+                                     that colour, not a theme surface. -->
+                                <Border x:Name="ColorPreviewBorder" Width="28" Height="26" Background="#000000" BorderBrush="{DynamicResource InputBorder}" BorderThickness="1" />
                                 <TextBox x:Name="ColorTextBox" Text="#000000" Width="140" Margin="8,0,0,0" Padding="6,4"
                                          VerticalContentAlignment="Center" TextChanged="ColorTextBox_TextChanged" />
                                 <Button Content="Pick…" Width="84" Margin="8,0,0,0" Padding="8,4" Click="PickColor_Click" />
                             </StackPanel>
                         </StackPanel>
 
-                        <TextBlock Text="PAUSE WHEN A MONITOR IS COVERED" FontSize="11" FontWeight="SemiBold" Foreground="#6A6A75" Margin="0,4,0,6" />
+                        <TextBlock Text="PAUSE WHEN A MONITOR IS COVERED" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource TextSecondary}" Margin="0,4,0,6" />
                         <CheckBox x:Name="PauseMaximizedCheckBox" Content="Pause a monitor that shows a maximized window" />
                         <CheckBox x:Name="PauseFullscreenCheckBox" Content="Pause every monitor while a fullscreen app has the focus" Margin="0,6,0,0" />
 
-                        <TextBlock Text="STARTUP" FontSize="11" FontWeight="SemiBold" Foreground="#6A6A75" Margin="0,16,0,6" />
+                        <TextBlock Text="STARTUP" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource TextSecondary}" Margin="0,16,0,6" />
                         <CheckBox x:Name="StartWithWindowsCheckBox" Content="Start with Windows (current user)"
                                   Checked="StartWithWindowsCheckBox_Changed" Unchecked="StartWithWindowsCheckBox_Changed" />
                         <CheckBox x:Name="StartMinimizedCheckBox" Content="Start hidden in the notification area" Margin="0,6,0,0" />
                         <Button Content="Open settings folder" HorizontalAlignment="Left" Width="176" Margin="0,12,0,0" Padding="8,4" Click="OpenFolder_Click" />
 
-                        <TextBlock Text="COMPATIBILITY" FontSize="11" FontWeight="SemiBold" Foreground="#6A6A75" Margin="0,16,0,6" />
+                        <TextBlock Text="COMPATIBILITY" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource TextSecondary}" Margin="0,16,0,6" />
                         <ComboBox x:Name="RendererComboBox" Width="360" HorizontalAlignment="Left"
                                   SelectionChanged="RendererComboBox_SelectionChanged">
                             <ComboBoxItem Content="DirectComposition (recommended)" />
@@ -180,7 +188,7 @@
                             <ComboBoxItem Content="Wallpaper scale: match the display scaling" Tag="MatchDisplayScaling" />
                             <ComboBoxItem Content="Wallpaper scale: assume a 150 % display" Tag="AssumeOneHundredFiftyPercent" />
                         </ComboBox>
-                        <TextBlock FontSize="11" Foreground="#6A6A75" TextWrapping="Wrap" Margin="0,4,0,0"
+                        <TextBlock FontSize="11" Foreground="{DynamicResource TextSecondary}" TextWrapping="Wrap" Margin="0,4,0,0"
                                    Text="DirectComposition is the only stack Windows 11 24H2 and newer composes into the desktop. The WPF modes only work on older builds. Takes effect after a restart." />
                         <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
                             <Button Content="Restart LiveWall" Width="140" Padding="8,4" Click="Restart_Click" />
@@ -191,10 +199,10 @@
             </Border>
         </Grid>
 
-        <Border Grid.Row="2" Background="#FFFFFF" BorderBrush="#E1E1E6" BorderThickness="1" CornerRadius="6" Padding="10" Margin="0,12,0,0">
+        <Border Grid.Row="2" Background="{DynamicResource PanelBackground}" BorderBrush="{DynamicResource PanelBorder}" BorderThickness="1" CornerRadius="6" Padding="10" Margin="0,12,0,0">
             <StackPanel>
                 <TextBlock x:Name="EngineStateTextBlock" Text="Engine stopped" FontWeight="SemiBold" />
-                <TextBlock x:Name="StatusTextBlock" Text="" Foreground="#6A6A75" TextWrapping="Wrap" Margin="0,4,0,0" />
+                <TextBlock x:Name="StatusTextBlock" Text="" Foreground="{DynamicResource TextSecondary}" TextWrapping="Wrap" Margin="0,4,0,0" />
             </StackPanel>
         </Border>
     </Grid>

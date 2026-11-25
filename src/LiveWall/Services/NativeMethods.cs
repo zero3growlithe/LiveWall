@@ -123,6 +123,10 @@ internal static class NativeMethods
     [DllImport("dwmapi.dll", EntryPoint = "DwmGetWindowAttribute")]
     internal static extern int DwmGetWindowAttributeInt32(IntPtr windowHandle, int attribute, out int value, int size);
 
+    /// <summary>DWMWA_USE_IMMERSIVE_DARK_MODE (20, or 19 before Windows 10 20H1) is what darkens the caption.</summary>
+    [DllImport("dwmapi.dll", EntryPoint = "DwmSetWindowAttribute")]
+    internal static extern int DwmSetWindowAttributeInt32(IntPtr windowHandle, int attribute, ref int value, int size);
+
     [DllImport("shell32.dll")]
     internal static extern int SHQueryUserNotificationState(out int state);
 

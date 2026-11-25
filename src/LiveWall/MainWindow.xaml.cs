@@ -68,6 +68,7 @@ public partial class MainWindow : Window
             StartWithWindowsCheckBox.IsChecked = StartupService.IsRegistered();
             RendererComboBox.SelectedIndex = (int)_settings.Renderer;
             SelectComboItemByTag(WallpaperScaleComboBox, _settings.WallpaperScale.ToString());
+            SelectComboItemByTag(ThemeComboBox, _settings.Theme.ToString());
         }
         finally
         {
@@ -667,6 +668,37 @@ public partial class MainWindow : Window
         _settings.Renderer = (RendererPreference)Math.Clamp(RendererComboBox.SelectedIndex, 0, 2);
         _settings.RenderMode = _settings.Renderer == RendererPreference.WpfSoftware ? RenderModePreference.Software : RenderModePreference.Hardware;
         SettingsService.Save(_settings);
+    }
+
+    // ── Theme ──
+
+    /// <summary>
+    /// Swaps the palette as soon as the selector changes and remembers the choice. No restart and no re-show:
+    /// ThemeManager replaces the palette dictionary, and every open window repaints through DynamicResource.
+    /// </summary>
+    private void ThemeComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_suppressEditorEvents)
+        {
+            return;
+        }
+
+        _settings.Theme = ParseTheme();
+        ThemeManager.Apply(_settings.Theme);
+        SettingsService.Save(_settings);
+    }
+
+    private AppTheme ParseTheme()
+    {
+        ComboBoxItem? item = ThemeComboBox.SelectedItem as ComboBoxItem;
+        string? tag = item == null ? null : item.Tag as string;
+        AppTheme theme;
+        if (tag != null && Enum.TryParse(tag, true, out theme))
+        {
+            return theme;
+        }
+
+        return AppTheme.Light;
     }
 
     private WallpaperScaleMode ReadScaleMode()

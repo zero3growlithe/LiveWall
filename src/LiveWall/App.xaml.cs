@@ -49,6 +49,17 @@ public partial class App : Application
         bool firstRun = !File.Exists(AppLog.SettingsPath);
         _settings = SettingsService.Load();
 
+        if (firstRun)
+        {
+            // Nothing saved yet: open in whatever mode Windows itself is set to. From then on the choice is the
+            // user's and comes back from the settings file.
+            _settings.Theme = ThemeManager.DetectSystemTheme();
+        }
+
+        // Before any window exists, or the user sees a light window flash and then a dark one.
+        ThemeManager.Initialize();
+        ThemeManager.Apply(_settings.Theme);
+
         if (_settings.Renderer == RendererPreference.WpfSoftware || _settings.RenderMode == RenderModePreference.Software)
         {
             // Must happen before any window exists: WPF decides the render path per window at creation.

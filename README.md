@@ -33,6 +33,9 @@ lets every monitor have its own wallpaper, and automatically pauses playback whi
   load it later (picking a profile in the list copies its name into the name box, so `Save` overwrites it)
   (`%LocalAppData%\LiveWall\profiles\<name>.json`). The renderer choice and the window placement are not part
   of a profile: they describe the app, not the decor.
+- **Light and dark theme**, chosen in the header and swapped **without a restart**: the palette dictionary is
+  replaced in place, so every open window and dialog repaints itself, and the native title bar follows. The
+  first run opens in whatever mode Windows is set to (`AppsUseLightTheme`); after that the choice is remembered.
 - **Tray icon** with `Settings…`, `Pause all` / `Resume all` and `Exit`; closing the window hides to tray.
 - **Start with Windows** (HKCU `Run`, registered with the `--tray` switch so a manual launch always
   opens the settings window while an autostart launch goes straight to the notification area).
@@ -48,6 +51,7 @@ lets every monitor have its own wallpaper, and automatically pauses playback whi
 | `Diagnostics…` | Desktop topology, per-surface state, what the screen actually shows, plus the visibility test. |
 | `Pause all` / `Resume all` | Manual override, independent of the automatic detection. |
 | `Hide to tray` | Keeps the wallpaper running, removes the window. |
+| `Light theme` / `Dark theme` | Palette for the settings window and its dialogs, applied instantly. |
 | `Same wallpaper on every monitor` | Shared configuration; uncheck to edit each monitor separately. |
 | `Skip to the next picture / video` | Steps a slideshow or video folder forward at once. |
 | `Wallpaper scale` | `pixels as DIPs (no DPI adjustment)` is the default and the setting that draws 1:1 on a 100 % display. |
@@ -116,6 +120,21 @@ footprint can be measured instead of felt.
 6. `COMPATIBILITY` lets you switch the drawing stack: DirectComposition (default), or the two WPF paths as
    fallbacks for older builds. The app also walks that list by itself on first run, paints magenta, samples
    the desktop pixels to prove whether anything arrived, and keeps the first combination that worked.
+
+## Theme
+
+Two palettes live in `Themes/Light.xaml` and `Themes/Dark.xaml` with an **identical key set**, and
+`Themes/Controls.xaml` styles every control from those keys with `DynamicResource` only. `ThemeManager` replaces
+the palette entry of `Application.Resources.MergedDictionaries` — the same window, the same controls, a new set
+of brushes — and paints the native caption through `DwmSetWindowAttribute(20, …)` (19 before Windows 10 20H1).
+
+Because the palettes are swapped rather than reloaded, **adding a brush means adding it to both files**: a key
+that exists in one and not the other throws the moment the theme is switched, not at startup. The palettes also
+override the `SystemColors` brush keys, which is what keeps the parts nobody restyles (scrollbar internals, a
+`ComboBox` edit box, native tooltips) from staying light inside a dark window.
+
+The notification-area menu is a Windows (WinForms) menu and keeps the system look — it is drawn by the shell,
+not by WPF.
 
 ## Requirements
 
